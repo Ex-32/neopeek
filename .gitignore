@@ -1,0 +1,6 @@
+/target
+/result
+/result-*
+*.tgz
+/tmp
+.DS_Store
