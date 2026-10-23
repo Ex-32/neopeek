@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+authors = ["neopeek contributors"]
+
+[workspace.dependencies]
+# windowing / GPU
+winit = "0.30.13"
+wgpu = "30.0.1"
+pollster = "1.0.1"
+glam = "0.34.1"
+glyphon = "0.12.0"
+# dsp
+rustfft = "6.4.1"
+ringbuf = "0.5.3"
+# audio
+libpulse-binding = "2.30.1"
+cpal = "0.18.2"
+# config / theming
+ron = "0.12.2"
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
+clap = "4.6.7"
+directories = "6.0"
+notify = "8.2.0"
+# logging
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
