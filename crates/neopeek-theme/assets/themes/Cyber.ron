@@ -1,11 +1,11 @@
-// Cyber: high-contrast scarlet/cyan waterfall with electric-yellow
-// Lissajous — pink-leaning scarlet accent.
+// Cyber: high-contrast bright-pink/cyan waterfall with electric-yellow
+// Lissajous — hot-pink accent.
 (
     name: "Cyber",
     background: "#0a0410",
     waterfall: (
-        past: "#ff2d55",       // pink-leaning scarlet
-        future: "#ff6b81",     // lighter scarlet for the filled mode
+        past: "#ff006e",       // hot pink
+        future: "#ff5c9e",     // lighter pink for the filled mode
         now_line: "#ffd2c2",   // bright scarlet-white "now" edge
         rainbow: false,
         db_floor: -80.0,
@@ -14,5 +14,5 @@
     waveform: ( color: "#00e5ff", width: 1.0 ),
     lissajous: ( color: "#fff01a", scale: 0.45 ),
     meters: ( grad_low: "#00e5ff", grad_high: "#ff2400", peak_hold_ms: 800 ),
-    hud: ( text: "#f2e9ff", dim: "#7a6f8f", font_size: 14.0, accent: "#ff2d55" ),
+    hud: ( text: "#f2e9ff", dim: "#7a6f8f", font_size: 14.0, accent: "#ff006e" ),
 )
