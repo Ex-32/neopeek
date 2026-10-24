@@ -37,8 +37,8 @@
 //!   bounded (default 5 s), per the same idle formula.
 //! - `frames_pending == true` → [`IdleAction::Redraw`]: in the active
 //!   path that is the low-latency "drain fresh frames now" trigger.
-//!   While idle the caller drains silently (a future
-//!   `Renderer::poll_audio`) *before* deciding, so pending-ness after
+//!   While idle the caller drains silently ([`crate::shell::Renderer::poll_audio`])
+//!   *before* deciding, so pending-ness after
 //!   that means the caller skipped the poll-drain — the gate then
 //!   degrades safely to one render per poll (never a hot spin, never
 //!   misses loud audio) instead of a full sleep.
@@ -47,10 +47,9 @@
 //! average 0.5 s) → the poll-drain notices the loud frame and
 //!   `decide` returns [`IdleAction::Redraw`] → the caller's existing
 //!   pacing requests a redraw, aligned by the compositor frame callback
-//!   (≤ 1 display frame). Worst case ≈ 1 s + 1 frame; the up-to-`poll`
-//!   worth of frames that arrived while sleeping are drained on resume
-//!   (the ring is drained fully at each poll, so at most ~1 s of slices
-//!   can be dropped by the DSP's newest-drop policy while it is full).
+//!   (≤ 1 display frame). Worst case ≈ 1 s + 1 frame. No slices are lost
+//!   while paused: each poll drains the full ring, and the ring's
+//!   capacity (256 slices ≈ 5.5 s) far exceeds the 1 s poll.
 //!
 //! While idle the sleep is simply one poll (`poll`, 1 s): the literal
 //! `min(1 s, threshold − elapsed)` from the design notes degenerates

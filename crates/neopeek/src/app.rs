@@ -13,6 +13,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use neopeek_render::hud::{FeatureSmooth, HudData, HudSources, MeterState};
+use neopeek_render::idle::{IdleAction, IdleGate};
 use neopeek_render::shell::Renderer;
 use neopeek_render::views::ViewSettings;
 
@@ -44,6 +45,39 @@ pub(crate) fn redraw_due(
     last_render.is_none_or(|t| now.duration_since(t) >= tick)
 }
 
+/// Composed pacing decision for `about_to_wait`: the [`IdleGate`]'s
+/// [`IdleAction`] plus the existing [`redraw_due`] tick pacing →
+/// `(request a redraw now, control-flow deadline)`.
+///
+/// - `Redraw`: the ordinary path — request a redraw only when
+///   [`redraw_due`] says so (fresh frames pending, or the tick has
+///   elapsed since the last render — keeps camera/theme/freeze changes
+///   live without busy-spinning), and sleep anchored to the last render
+///   to avoid tick drift (re-arming from `now` when the deadline
+///   already passed so a stalled present can't hot-loop).
+/// - `Sleep(poll)`: idle — no redraw at all; wake at `now + poll` for
+///   the next silent drain + re-evaluation.
+///
+/// Pure so the gate-in-the-loop pacing is unit-tested headlessly.
+pub(crate) fn wait_plan(
+    now: Instant,
+    last_render: Option<Instant>,
+    frames_pending: bool,
+    tick: Duration,
+    action: IdleAction,
+) -> (bool, Instant) {
+    match action {
+        IdleAction::Redraw => {
+            let deadline = match last_render {
+                Some(t) if t + tick > now => t + tick,
+                _ => now + tick,
+            };
+            (redraw_due(now, last_render, frames_pending, tick), deadline)
+        }
+        IdleAction::Sleep(poll) => (false, now + poll),
+    }
+}
+
 pub struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -57,6 +91,11 @@ pub struct App {
     modifiers: winit::keyboard::ModifiersState,
     autospin: bool,
     last_frame: Option<Instant>,
+    /// Idle-pause gate (`--idle-pause`): stops redraws while audio is
+    /// silent/absent — state machine in `neopeek_render::idle`; fed from
+    /// the drain loop (per render) and `poll_audio` (per idle poll), and
+    /// from `note_input` on state-changing input events.
+    idle_gate: IdleGate,
     // HUD state (M6)
     meter: MeterState,
     smooth: FeatureSmooth,
@@ -84,6 +123,7 @@ impl App {
         theme_arg: Option<String>,
         watch: bool,
         depth: usize,
+        idle_pause_secs: u64,
     ) -> Self {
         let (init, warn) = neopeek_theme::resolve(theme_arg.as_deref());
         if let Some(msg) = warn {
@@ -119,6 +159,9 @@ impl App {
                 let mut s = ViewSettings::default();
                 // Same clamp the runtime depth keys apply.
                 s.set_depth_clamped(depth);
+                // CLI knob (`--idle-pause`, default 5, 0 = disabled); the
+                // dump reports the live value from here.
+                s.idle_pause = Duration::from_secs(idle_pause_secs);
                 s
             },
             audio: None,
@@ -128,6 +171,7 @@ impl App {
             modifiers: winit::keyboard::ModifiersState::empty(),
             autospin,
             last_frame: None,
+            idle_gate: IdleGate::new(Duration::from_secs(idle_pause_secs)),
             meter: MeterState::default(),
             smooth: FeatureSmooth::default(),
             fps: 0.0,
@@ -154,6 +198,8 @@ impl App {
         if let Some(r) = self.renderer.as_mut() {
             r.set_theme_ramp(&t);
         }
+        // Theme cycle changes the picture: an idle-paused display resumes.
+        self.idle_gate.note_input(Instant::now());
     }
 
     /// Rainbow default + Lissajous scale are theme-owned; re-applied on
@@ -236,7 +282,11 @@ impl App {
         self.meter = meter;
         self.smooth = smooth;
         let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-        renderer.render(&self.settings, hud.as_ref(), scale, theme);
+        let drain = renderer.render(&self.settings, hud.as_ref(), scale, theme);
+        // The renderer just drained pending frames: fold their count and
+        // max bin magnitude into the idle gate (silence = max == 0.0; a
+        // non-silent frame resumes rendering).
+        self.idle_gate.note_drain(now, drain.frames, drain.frame_max);
     }
 
     fn request_redraw(&self) {
@@ -257,6 +307,11 @@ impl App {
             Some(mhz) if mhz > 0 => Duration::from_nanos(1_000_000_000_000 / u64::from(mhz)),
             _ => DEFAULT_REDRAW_TICK,
         }
+    }
+
+    /// Whether undrained DSP frames are waiting in the ring.
+    fn frames_pending(&self) -> bool {
+        self.renderer.as_ref().is_some_and(|r| r.frames_pending())
     }
 }
 
@@ -327,19 +382,25 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size.width.max(1), size.height.max(1));
                 }
+                self.idle_gate.note_input(Instant::now());
                 self.request_redraw();
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
-            WindowEvent::MouseInput { state, button, .. } => match (state, button) {
-                (ElementState::Pressed, winit::event::MouseButton::Left) => {
-                    self.drag = Some(DragButton::Left);
+            WindowEvent::MouseInput { state, button, .. } => {
+                // Drag press/release opens an activity window (the drag
+                // that follows orbits/pans; release stops it).
+                self.idle_gate.note_input(Instant::now());
+                match (state, button) {
+                    (ElementState::Pressed, winit::event::MouseButton::Left) => {
+                        self.drag = Some(DragButton::Left);
+                    }
+                    (ElementState::Pressed, winit::event::MouseButton::Middle) => {
+                        self.drag = Some(DragButton::Middle);
+                    }
+                    (ElementState::Released, _) => self.drag = None,
+                    _ => {}
                 }
-                (ElementState::Pressed, winit::event::MouseButton::Middle) => {
-                    self.drag = Some(DragButton::Middle);
-                }
-                (ElementState::Released, _) => self.drag = None,
-                _ => {}
-            },
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(renderer) = self.renderer.as_mut() else {
                     return;
@@ -359,6 +420,7 @@ impl ApplicationHandler for App {
                         let pan_per_px = 0.002 / dpi.max(0.5);
                         renderer.camera_mut().pan(dx as f32 * pan_per_px, -dy as f32 * pan_per_px);
                     }
+                    self.idle_gate.note_input(Instant::now());
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -373,6 +435,7 @@ impl ApplicationHandler for App {
                         }
                     };
                     renderer.camera_mut().dolly(factor);
+                    self.idle_gate.note_input(Instant::now());
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -397,6 +460,7 @@ impl ApplicationHandler for App {
                         }
                         if let Some(d) = desc {
                             tracing::info!("{d}");
+                            self.idle_gate.note_input(Instant::now());
                         }
                     }
                     Key::Character(c) => {
@@ -413,6 +477,10 @@ impl ApplicationHandler for App {
                         desc = desc.or(camera_desc);
                         if let Some(d) = desc {
                             tracing::info!("{d}");
+                            // A key that changed settings/camera opens an
+                            // activity window (frozen/muted bypass the
+                            // gate; toggles render once immediately).
+                            self.idle_gate.note_input(Instant::now());
                         }
                         if quit {
                             event_loop.exit();
@@ -448,38 +516,68 @@ impl ApplicationHandler for App {
                 if let Some(r) = self.renderer.as_mut() {
                     r.set_theme_ramp(&t);
                 }
+                // Reload changes the picture: an idle-paused display resumes.
+                self.idle_gate.note_input(Instant::now());
             }
         }
 
-        // Redraw pacing (PLAN.md §2.3/§4.2): the app renders continuously
-        // at display cadence — with zero pending frames we still redraw so
-        // camera/theme/freeze changes stay live — but never busy-spins:
-        // a redraw is requested only when fresh DSP frames are pending
-        // (low latency) or when the redraw tick has come due since the
-        // last render. Between wakes the loop sleeps on the tick deadline
-        // (`WaitUntil`) or on events. On Wayland the actual dispatch of
-        // the requested redraw is additionally aligned with the
-        // compositor frame callback (`Renderer::render` calls
-        // `window.pre_present_notify()`), so the tick is a fallback for
-        // platforms without frame callbacks (X11) and for missed ones.
+        // Redraw pacing (PLAN.md §2.3/§4.2) with the idle gate
+        // (`--idle-pause`, state machine in `neopeek_render::idle`): the
+        // app renders at display cadence while there is activity — fresh
+        // DSP frames (low latency) or the redraw tick keeping
+        // camera/theme/freeze changes live — but once nothing has been
+        // audible for `idle_pause` seconds it stops requesting redraws
+        // entirely and wakes once per poll (1 s) to drain the ring
+        // silently and re-evaluate. Input events and resumed audio
+        // return the loop to the ordinary tick-paced path. On Wayland
+        // the actual dispatch of a requested redraw is additionally
+        // aligned with the compositor frame callback
+        // (`Renderer::render` calls `window.pre_present_notify()`), so
+        // the tick is a fallback for platforms without frame callbacks
+        // (X11) and for missed ones.
         let now = Instant::now();
-        let frames_pending = self
-            .renderer
-            .as_ref()
-            .is_some_and(|r| r.frames_pending());
         let tick = self.redraw_tick();
-        if redraw_due(now, self.last_frame, frames_pending, tick) {
+        // States that must keep rendering unconditionally — the user
+        // froze the scene to look at it (`f`), muted ingestion but may
+        // still orbit (`m`), autospin animates the camera every frame —
+        // and `--idle-pause 0` (gate disabled). Only genuine audio
+        // idleness pauses.
+        let keep_rendering = self.autospin
+            || self.settings.frozen
+            || self.settings.muted
+            || self.idle_gate.threshold().is_zero();
+        let frames_pending;
+        let action = if keep_rendering {
+            frames_pending = self.frames_pending();
+            IdleAction::Redraw
+        } else {
+            // While idle: drain pending frames silently (no draw) so the
+            // gate can tell a silently flowing monitor stream from
+            // resumed audio before deciding; `poll_audio` is a no-op
+            // when frozen/muted anyway.
+            if self.idle_gate.is_idle(now) {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    let drain = renderer.poll_audio(&self.settings);
+                    self.idle_gate.note_drain(now, drain.frames, drain.frame_max);
+                }
+            }
+            // Measured after the poll-drain: silence keeps the ring
+            // drained so `decide` can sleep; frames_pending then only
+            // reports audio that arrived in the last instants.
+            frames_pending = self.frames_pending();
+            // `input_dirty` is always `false` here: state-changing input
+            // events call `idle_gate.note_input` directly in
+            // `window_event`, whose latch `decide` consumes.
+            self.idle_gate.decide(now, frames_pending, false)
+        };
+
+        // Pure pacing composition (unit-tested): request a redraw only
+        // when due, sleep on the tick deadline (anchored to the last
+        // render) or on the gate's poll deadline while idle.
+        let (redraw, deadline) = wait_plan(now, self.last_frame, frames_pending, tick, action);
+        if redraw {
             self.request_redraw();
         }
-        // Sleep until the next tick; if a redraw is already scheduled (or
-        // a frame callback is in flight) the loop wakes earlier anyway.
-        // Anchoring to the last render instead of `now` avoids drift; if
-        // the deadline already passed we re-arm from `now` so a stalled
-        // present can't turn this into a hot no-op loop.
-        let deadline = match self.last_frame {
-            Some(t) if t + tick > now => t + tick,
-            _ => now + tick,
-        };
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 }
@@ -539,5 +637,101 @@ mod tests {
         let a_while_ago = now.checked_sub(Duration::from_millis(10)).unwrap();
         assert!(!redraw_due(now, Some(a_while_ago), false, DEFAULT_REDRAW_TICK));
         assert!(redraw_due(now, Some(a_while_ago), false, Duration::from_millis(9)));
+    }
+
+    // --- wait_plan: the gate-in-the-loop pacing composition (pure) ---
+
+    /// Redraw action keeps the existing behavior exactly: request only
+    /// when due (fresh frames pending → immediate; within the tick with
+    /// nothing pending → quiet) and anchor the deadline to the last
+    /// render.
+    #[test]
+    fn wait_plan_redraw_matches_old_pacing() {
+        let now = Instant::now();
+        let just_rendered = now.checked_sub(Duration::from_millis(5)).unwrap();
+
+        let (redraw, deadline) =
+            wait_plan(now, Some(just_rendered), true, DEFAULT_REDRAW_TICK, IdleAction::Redraw);
+        assert!(redraw, "pending frames redraw immediately");
+        assert_eq!(deadline, just_rendered + DEFAULT_REDRAW_TICK, "anchored, no drift");
+
+        let (redraw, _) =
+            wait_plan(now, Some(just_rendered), false, DEFAULT_REDRAW_TICK, IdleAction::Redraw);
+        assert!(!redraw, "within the tick, nothing pending → quiet");
+    }
+
+    /// Sleep action: no redraw at all, wake at one poll past `now`.
+    #[test]
+    fn wait_plan_sleep_waits_for_poll() {
+        let now = Instant::now();
+        let long_ago = now.checked_sub(Duration::from_secs(30)).unwrap();
+        let poll = Duration::from_millis(250);
+        let (redraw, deadline) =
+            wait_plan(now, Some(long_ago), false, DEFAULT_REDRAW_TICK, IdleAction::Sleep(poll));
+        assert!(!redraw, "idle → never request_redraw");
+        assert_eq!(deadline, now + poll);
+        // wait_plan trusts the action: pending-ness is `decide`'s
+        // business (it never returns Sleep with fresh frames), so a
+        // hypothetical Sleep-with-pending still stays quiet here.
+        let (redraw, _) =
+            wait_plan(now, Some(long_ago), true, DEFAULT_REDRAW_TICK, IdleAction::Sleep(poll));
+        assert!(!redraw);
+    }
+
+    /// The whole loop, composed: loud → tick-paced redraws; silence →
+    /// Sleep polls after `idle_pause`; new sound → Redraw within one
+    /// poll (resume-latency budget, short poll for a crisp test).
+    #[test]
+    fn gate_composition_loud_silent_resume() {
+        let base = Instant::now();
+        let poll = Duration::from_millis(50);
+        let threshold = Duration::from_millis(200);
+        let tick = DEFAULT_REDRAW_TICK;
+        let mut gate = IdleGate::with_poll(threshold, poll);
+
+        // Loud frame drains at t = 0: active → tick-paced redraw.
+        gate.note_drain(base, 3, 0.4);
+        let now = base;
+        let action = gate.decide(now, false, false);
+        let (redraw, _) = wait_plan(now, None, false, tick, action);
+        assert!(redraw, "first wake renders");
+
+        // Silence flows while still under the threshold: the countdown
+        // keeps rendering, one redraw per tick (a render just happened a
+        // tick ago, so it is due again now).
+        let mut now = base + tick;
+        while now < base + threshold {
+            gate.note_drain(now, 2, 0.0); // silent frames keep flowing
+            let action = gate.decide(now, false, false);
+            assert_eq!(action, IdleAction::Redraw, "countdown keeps rendering at {now:?}");
+            let (redraw, deadline) = wait_plan(now, Some(now - tick), false, tick, action);
+            assert!(redraw && deadline == now + tick, "tick-paced, not hot");
+            now += tick;
+        }
+        // (Activity is still the loud frame at `base`: silent frames in
+        // the countdown don't extend it, so the gate crosses the
+        // threshold right about now.)
+
+        // Well past the last silent frame: idle — no redraws, poll sleeps.
+        now += threshold + Duration::from_millis(1);
+        gate.note_drain(now, 0, 0.0); // empty ring: prove-nothing drain
+        let action = gate.decide(now, false, false);
+        assert_eq!(action, IdleAction::Sleep(poll));
+        let (redraw, _) = wait_plan(now, Some(now - tick), false, tick, action);
+        assert!(!redraw);
+
+        // A new sound lands just after a poll (worst case): the next
+        // poll drains it and resumes within one poll.
+        let onset = now + Duration::from_millis(10);
+        let resume = onset + poll - Duration::from_millis(5);
+        gate.note_drain(resume, 47, 0.3);
+        let action = gate.decide(resume, false, false);
+        assert_eq!(action, IdleAction::Redraw, "resumed audio redraws");
+        let (redraw, _) = wait_plan(resume, Some(now), false, tick, action);
+        assert!(redraw, "resume render is due (last render is poll-stale)");
+        assert!(
+            resume.duration_since(onset) <= poll,
+            "decision within one poll of onset"
+        );
     }
 }

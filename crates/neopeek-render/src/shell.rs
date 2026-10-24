@@ -41,6 +41,20 @@ impl std::fmt::Display for ShellError {
 
 impl std::error::Error for ShellError {}
 
+/// What a frame drain saw — the [`crate::idle::IdleGate`]'s audio input
+/// and the binary's wiring glue. Returned by [`Renderer::render`] (one
+/// value per drawn frame) and [`Renderer::poll_audio`] (the idle-wakeup
+/// silent drain); `frames == 0` when frozen/muted or nothing pending.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DrainInfo {
+    /// Frames drained this wake.
+    pub frames: usize,
+    /// Max raw bin magnitude across the drained frames (`0.0` = exact
+    /// digital silence — PA monitor silence is exact zeros). Always
+    /// computed, independent of the `auto_scale` toggle.
+    pub frame_max: f32,
+}
+
 pub struct Renderer {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -280,38 +294,21 @@ impl Renderer {
 
     /// Draws one frame: the 3D scene pass, then the screen-space HUD pass
     /// (`hud` may be `None` while the HUD toggle is off). `theme` drives
-    /// all colors (M7).
-    pub fn render(&mut self, settings: &ViewSettings, hud: Option<&HudData>, scale: f32, theme: &Theme) {
+    /// all colors (M7). Returns the drain info (frames drained this wake
+    /// + their max bin magnitude) for the binary's `IdleGate` feed.
+    pub fn render(
+        &mut self,
+        settings: &ViewSettings,
+        hud: Option<&HudData>,
+        scale: f32,
+        theme: &Theme,
+    ) -> DrainInfo {
         // Drain pending frames (FIFO, oldest first) unless frozen or
         // muted; each is appended to the history row ring. Even with no
         // new frames we continue rendering so scale/camera changes stay
         // live.
         let now = Instant::now();
-        if !settings.frozen && !settings.muted {
-            self.scratch_frames.clear();
-            let drained = frame_ring::drain_into(&mut self.frame_cons, &mut self.scratch_frames, MAX_FRAMES_PER_WAKE);
-            for frame in &self.scratch_frames {
-                self.history.write_slice(&self.queue, frame);
-                // `a` auto-scale: fold this slice's max raw bin magnitude
-                // (zero-alloc iterator fold) into the adaptive state.
-                if settings.auto_scale {
-                    let max_bin = frame.bins.iter().copied().fold(0.0f32, f32::max);
-                    self.autoscale.observe(max_bin);
-                }
-            }
-            // Toggle off (or off-by-default): forget the adaptive state so
-            // a later re-arm starts from silence, and let the uniform fall
-            // back to the fixed default below.
-            if !settings.auto_scale {
-                self.autoscale.reset();
-            }
-            if drained > 0 {
-                if let Some(latest) = self.scratch_frames.last().copied() {
-                    self.latest = Some(latest);
-                }
-                self.last_frame_arrival = Some(now);
-            }
-        }
+        let drain = self.drain_frames(settings);
 
         // Composition drift: between slice arrivals the fade fades toward
         // the next position (sndpeek animates the planes continuously).
@@ -372,7 +369,7 @@ impl Renderer {
                 // (common on Wayland during resize).
                 tracing::debug!("surface texture: {other:?}");
                 self.window.request_redraw();
-                return;
+                return drain;
             }
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -460,6 +457,59 @@ impl Renderer {
         // hot-spins. No-op on X11/Windows/macOS.
         self.window.pre_present_notify();
         self.queue.present(frame);
+        drain
+    }
+
+    /// Drains pending DSP frames (unless frozen/muted): history writes,
+    /// auto-scale, `latest`, drift anchor — the one shared drain path for
+    /// [`Self::render`] and [`Self::poll_audio`]. `frame_max` (max raw
+    /// bin magnitude across the drained slices) is computed even when
+    /// `auto_scale` is off so the idle gate sees silence for free.
+    fn drain_frames(&mut self, settings: &ViewSettings) -> DrainInfo {
+        let now = Instant::now();
+        if settings.frozen || settings.muted {
+            return DrainInfo::default();
+        }
+        self.scratch_frames.clear();
+        let drained =
+            frame_ring::drain_into(&mut self.frame_cons, &mut self.scratch_frames, MAX_FRAMES_PER_WAKE);
+        let mut frame_max = 0.0f32;
+        for frame in &self.scratch_frames {
+            self.history.write_slice(&self.queue, frame);
+            let max_bin = frame.bins.iter().copied().fold(0.0f32, f32::max);
+            frame_max = frame_max.max(max_bin);
+            // `a` auto-scale: fold this slice's max raw bin magnitude
+            // (zero-alloc iterator fold) into the adaptive state.
+            if settings.auto_scale {
+                self.autoscale.observe(max_bin);
+            }
+        }
+        // Toggle off (or off-by-default): forget the adaptive state so
+        // a later re-arm starts from silence, and let the uniform fall
+        // back to the fixed default below.
+        if !settings.auto_scale {
+            self.autoscale.reset();
+        }
+        if drained > 0 {
+            if let Some(latest) = self.scratch_frames.last().copied() {
+                self.latest = Some(latest);
+            }
+            self.last_frame_arrival = Some(now);
+        }
+        DrainInfo {
+            frames: drained,
+            frame_max,
+        }
+    }
+
+    /// Idle-wakeup drain: everything [`Self::render`] does to ingest
+    /// frames (history ring, auto-scale, `latest`, drift anchor) without
+    /// drawing or presenting. The binary calls this from `about_to_wait`
+    /// while the idle gate is sleeping, so the gate can tell a silently
+    /// flowing stream from resumed audio without spending a draw. The
+    /// resume-latency budget lives in `crate::idle`.
+    pub fn poll_audio(&mut self, settings: &ViewSettings) -> DrainInfo {
+        self.drain_frames(settings)
     }
 }
 
