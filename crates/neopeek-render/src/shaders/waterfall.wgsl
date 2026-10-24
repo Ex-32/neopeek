@@ -6,8 +6,11 @@
 // constants (linear `gain·freq_scale·1.8·sqrt(25·|X|)`, dB
 // `gain·freq_scale·(20·log10(|X|/8)+80)/80`, past greenish `(0.4·f,
 // 1.0·f, 0.4·f)`, "now" line cyan `(0.4, 1.0, 1.0)`), implemented fresh.
-
-const BINS: u32 = 1024u;
+//
+// Bin geometry: `bin` arrives as the vertex attribute (the CPU grid
+// covers exactly the current FFT's valid bins), so no compile-time bin
+// constant is needed — the history texture is MAX_BINS wide and only
+// columns < the FFT's bin_count are written.
 
 struct WaterUniforms {
     view_proj: mat4x4<f32>,
