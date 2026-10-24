@@ -26,12 +26,17 @@ cpal = "0.18.2"
 ron = "0.12.2"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
-clap = "4.6.7"
+clap = { version = "4.6.7", features = ["derive"] }
 directories = "6.0"
 notify = "8.2.0"
 # logging
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# errors
+thiserror = "2"
+# internal
+neopeek-audio = { path = "crates/neopeek-audio" }
+neopeek-config = { path = "crates/neopeek-config" }
 
 [profile.release]
 lto = "thin"

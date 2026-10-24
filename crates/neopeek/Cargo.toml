@@ -7,6 +7,9 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+neopeek-audio.workspace = true
+neopeek-config.workspace = true
+ringbuf.workspace = true
 winit.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
