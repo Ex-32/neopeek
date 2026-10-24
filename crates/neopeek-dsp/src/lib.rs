@@ -245,15 +245,32 @@ impl Engine {
     }
 
     /// Processes exactly one window of interleaved stereo PCM.
+    ///
+    /// Input is sanitized first: any non-finite sample (NaN, ±inf) becomes
+    /// 0.0. A PulseAudio/PipeWire MONITOR capture can legitimately contain
+    /// non-finite f32s (misbehaving capture sources, garbage in the host
+    /// float path), and one inf sample poisons the spectral features
+    /// permanently: inf bins make `centroid` and `flux` inf/inf = NaN, and
+    /// the 4-tap moving averages then hold NaN forever (they never recover).
+    /// The waterfall is lost too — its `sqrt(25·mag)` y-mapping sends any
+    /// non-finite bin's slice to a degenerate line-strip. Sanitizing at the
+    /// single entry point keeps every downstream consumer (features, meters,
+    /// waveform, Lissajous, `prev_bins` continuity) finite by construction.
     pub fn process_window(&mut self, interleaved: &[f32]) -> Option<Frame> {
         let want = WINDOW_FRAMES * CHANNELS;
         if interleaved.len() != want {
             tracing::warn!(got = interleaved.len(), want, "dsp: wrong window size");
             return None;
         }
+        // One sanitize pass over the window; everything below reads only
+        // sanitized values. Fixed-capacity stack buffer → allocation-free.
+        let mut stored = [0.0f32; WINDOW_FRAMES * CHANNELS];
+        for (dst, &src) in stored.iter_mut().zip(interleaved.iter()) {
+            *dst = if src.is_finite() { src } else { 0.0 };
+        }
         for k in 0..WINDOW_FRAMES {
-            let l = interleaved[k * CHANNELS];
-            let r = interleaved[k * CHANNELS + 1];
+            let l = stored[k * CHANNELS];
+            let r = stored[k * CHANNELS + 1];
             self.mono[k] = (l + r) * 0.5;
             self.left[k] = l;
             self.right[k] = r;
@@ -269,19 +286,34 @@ impl Engine {
                 self.max_l_r_abs = abs;
             }
         }
-        let (rms, peak) = channel_levels(interleaved);
+        let (rms, peak) = channel_levels(&stored);
 
         for (n, slot) in self.input[..WINDOW_FRAMES].iter_mut().enumerate() {
             let mono = self.mono[n] * self.hanning[n];
             *slot = Complex::new(mono, 0.0); // real signal → zero imaginary
         }
 
+        // Zero the pad region (1024→2048): the FFT runs in place, so
+        // without this each frame would start with the previous frame's
+        // spectrum in bins 1024..2048. That residue compounds across
+        // windows until the complex powers overflow to inf — another way
+        // to freeze centroid/flux at NaN even on a clean capture.
+        self.input[WINDOW_FRAMES..].fill(Complex::ZERO);
+
         // rustfft transforms in place with a single scratch buffer.
-        self.fft.process_with_scratch(&mut self.input, &mut self.scratch);
+        self.fft
+            .process_with_scratch(&mut self.input, &mut self.scratch);
 
         let mut mags = [0f32; BINS];
         for (k, slot) in mags.iter_mut().enumerate() {
-            *slot = (self.input[k].re * self.input[k].re + self.input[k].im * self.input[k].im).sqrt();
+            let m =
+                (self.input[k].re * self.input[k].re + self.input[k].im * self.input[k].im).sqrt();
+            // Belt-and-braces on top of the input sanitize: keeps us
+            // finite even if rustfft ever emits a denormal/rounding
+            // surprise. A poisoned magnitude here would again drive
+            // centroid/flux to inf/inf = NaN and freeze the smoothing
+            // history forever.
+            *slot = if m.is_finite() { m } else { 0.0 };
         }
         let raw_flux = flux(&mags, &self.prev_bins);
         let c = centroid(&mags);
@@ -433,6 +465,102 @@ mod tests {
         let (rms, peak) = channel_levels(&inter);
         assert_eq!(rms, [1.0, 0.0]);
         assert_eq!(peak, [1.0, 0.0]);
+    }
+
+    /// User-reported symptom: a monitor stream containing one non-finite
+    /// sample. Before the fix the FFT carried inf into the bins, so
+    /// centroid/flux froze at NaN (inf/inf through their normalizations)
+    /// and the waterfall's sqrt(25·mag) y-mapping clipped whole
+    /// line-strips. The engine must sanitize instead.
+    fn assert_finite_frame(frame: &Frame) {
+        assert!(frame.bins.iter().all(|m| m.is_finite()), "non-finite bin");
+        assert!(frame.mono.iter().all(|m| m.is_finite()));
+        assert!(frame.left.iter().all(|m| m.is_finite()));
+        assert!(frame.right.iter().all(|m| m.is_finite()));
+        assert!(frame.rms.iter().all(|m| m.is_finite()));
+        assert!(frame.peak.iter().all(|m| m.is_finite()));
+        assert!(frame.centroid.is_finite());
+        assert!(frame.flux.is_finite());
+        assert!(frame.rolloff50.is_finite());
+        assert!(frame.rolloff80.is_finite());
+    }
+
+    fn poisoned_window(bad: f32, at: usize) -> Vec<f32> {
+        let mut window = sine_interleaved(40.0 * RATE as f32 / FFT_SIZE as f32, WINDOW_FRAMES);
+        window[at] = bad;
+        window
+    }
+
+    #[test]
+    fn one_inf_sample_yields_finite_frame_and_small_rms() {
+        let mut engine = Engine::new();
+        // Warm the smoothing history with clean frames first.
+        for _ in 0..4 {
+            let f = engine
+                .process_window(&sine_interleaved(
+                    40.0 * RATE as f32 / FFT_SIZE as f32,
+                    WINDOW_FRAMES,
+                ))
+                .expect("clean window");
+            assert_finite_frame(&f);
+        }
+        for at in [0usize, 1, WINDOW_FRAMES * CHANNELS - 1] {
+            let f = engine
+                .process_window(&poisoned_window(f32::INFINITY, at))
+                .expect("poisoned window");
+            assert_finite_frame(&f);
+            // inf → 0.0 sample: RMS is small and finite, never pegged inf.
+            assert!(
+                f.rms.iter().all(|r| r.is_finite() && *r < 1.0 && *r > 0.0),
+                "rms {:?} should be finite and small",
+                f.rms
+            );
+            assert!(f.peak.iter().all(|p| p.is_finite() && *p <= 1.0));
+        }
+    }
+
+    #[test]
+    fn one_nan_sample_yields_finite_frame() {
+        let mut engine = Engine::new();
+        for at in [0usize, 1, WINDOW_FRAMES * CHANNELS - 1] {
+            let f = engine
+                .process_window(&poisoned_window(f32::NAN, at))
+                .expect("poisoned window");
+            assert_finite_frame(&f);
+        }
+    }
+
+    #[test]
+    fn repeated_poisoned_windows_do_not_poison_the_history() {
+        let mut engine = Engine::new();
+        // Alternate clean and hostile windows; frames stay finite and the
+        // 4-tap moving averages keep tracking (no NaN ever enters).
+        for i in 0..12 {
+            let bad = if i % 2 == 0 { f32::INFINITY } else { f32::NAN };
+            let f = if i % 4 == 0 {
+                engine
+                    .process_window(&poisoned_window(bad, 5))
+                    .expect("poisoned window")
+            } else {
+                engine
+                    .process_window(&sine_interleaved(
+                        40.0 * RATE as f32 / FFT_SIZE as f32,
+                        WINDOW_FRAMES,
+                    ))
+                    .expect("clean window")
+            };
+            assert_finite_frame(&f);
+        }
+        // After the storm, a clean frame lands back in its FFT bin: the
+        // engine recovered, nothing is stuck frozen.
+        let f = engine
+            .process_window(&sine_interleaved(
+                40.0 * RATE as f32 / FFT_SIZE as f32,
+                WINDOW_FRAMES,
+            ))
+            .expect("clean window");
+        assert_finite_frame(&f);
+        assert_eq!(argmax(&f.bins), 40);
     }
 
     #[test]
