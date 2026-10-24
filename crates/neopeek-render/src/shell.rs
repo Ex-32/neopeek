@@ -317,7 +317,7 @@ impl Renderer {
             z_offset: settings.z_offset,
             db: if settings.db { 1.0 } else { 0.0 },
             rainbow: if settings.rainbow { 1.0 } else { 0.0 },
-            gain: 1.0,
+            gain: crate::views::DEFAULT_WATERFALL_GAIN,
             freq_scale: settings.freq_scale,
             drift,
             _align_hole: [0.0; 3],

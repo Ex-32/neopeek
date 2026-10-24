@@ -8,8 +8,18 @@
 use neopeek_dsp::{Frame, WINDOW_FRAMES};
 use crate::grid::{DEFAULT_DEPTH, MAX_DEPTH, MIN_DEPTH};
 
-// Default vantage constants come from `crate::camera`; view constants here.
+/// Default vantage constants come from `crate::camera`; view constants here.
 pub const WAVE_Y: f32 = 0.7;
+
+/// Default waterfall uniform `gain` (sndpeek used 1.0). At 1.0 the linear
+/// mapping flings a typical monitor frame (max |X| ≈ 0.3 →
+/// y = 1.0·1.8·sqrt(25·0.3) ≈ 4.9) several times past the top of the view.
+/// 0.35 maps the same content to y ≈ 1.73, which under the default vantage
+/// (3.5 units out, 45° fov) projects to ≈ 0.86 of the front-slice frustum
+/// half-height — firmly on screen, just under the top edge (pinned by the
+/// `default_gain_typical_frame_fits` test via the real camera projection).
+/// `-`/`=` still zoom *relative* to this default.
+pub const DEFAULT_WATERFALL_GAIN: f32 = 0.35;
 pub const WAVE_SPAN: f32 = 1.8; // x ∈ −1.8…1.8
 pub const LISS_X: f32 = 1.2;
 pub const LISS_SCALE: f32 = 0.45;
@@ -275,6 +285,42 @@ pub fn append_lissajous(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVerte
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::Camera;
+
+    #[test]
+    fn default_gain_typical_frame_fits() {
+        // Sanity math for `DEFAULT_WATERFALL_GAIN`: the shader maps
+        // y = gain·freq_scale·1.8·sqrt(25·|X|). A typical monitor frame
+        // (max |X| ≈ 0.3) must land at a moderate fraction of the scene
+        // height through the *real* default camera projection (sndpeek's
+        // gain 1.0 flung the same content to y ≈ 4.9 — far off screen).
+        let y = DEFAULT_WATERFALL_GAIN * 1.0 * 1.8 * (25.0 * 0.3f32).sqrt();
+        assert!(
+            (y - 1.726).abs() < 0.01,
+            "y = {y}, expected ≈1.73 (0.35·1.8·sqrt(7.5))"
+        );
+        // Through the default vantage (target [0, 0.25, −1.3], distance
+        // 3.5, fov 45°): the top of the fresh-slice plane (z = 0) is the
+        // world y where the frustum cuts it. Content at 0.35 gain must sit
+        // under that top but well above center — moderate, not overshoot.
+        let cam = Camera::default_vantage(800, 600);
+        let vp = cam.view_proj();
+        let ndc_top = crate::camera::project(vp, [0.0, 2.0, 0.0])[1];
+        let ndc_our_peak = crate::camera::project(vp, [0.0, y, 0.0])[1];
+        assert!(
+            ndc_our_peak < ndc_top,
+            "typical frame must stay under the fresh-slice frustum top: {ndc_our_peak} < {ndc_top}?"
+        );
+        // …and above the old too-tall default by a wide headroom: gain 1.0
+        // overshoots the same frustum top.
+        let ndc_old = crate::camera::project(vp, [0.0, 1.8 * 1.0 * (25.0 * 0.3f32).sqrt(), 0.0])[1];
+        assert!(ndc_old > ndc_top, "gain 1.0 must overshoot: {ndc_old} > {ndc_top}?");
+        // Roughly four-fifths of the half-height (documented ≈0.86):
+        assert!(
+            (ndc_our_peak - 0.86).abs() < 0.05,
+            "default gain should land ≈0.86 of the half-height, got {ndc_our_peak}"
+        );
+    }
 
     #[test]
     fn defaults_match_plan() {

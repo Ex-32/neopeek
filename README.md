@@ -56,6 +56,13 @@ Mouse: left-drag orbit · shift-/middle-drag pan · wheel zoom.
 | `p` | print all live settings to the console (sndpeek parity) |
 | `q` / `Esc` | quit |
 
+The waterfall's default height (`views::DEFAULT_WATERFALL_GAIN = 0.35`, linear mode) is
+**tuned down from sndpeek's `gain = 1.0`**: with raw FFT magnitudes, gain 1.0 flings a
+typical frame (max `|X| ≈ 0.3` → y ≈ 4.9) several times past the top of the default view;
+0.35 maps the same content to y ≈ 1.7 — ≈ 0.86 of the front-slice frustum height at the
+default vantage. `-`/`=` zoom *relative* to it, and `a` (auto-scale) replaces it with a
+content-adaptive gain.
+
 The HUD: left = L/R RMS meters with 800 ms peak-hold ticks + feature panel
 (spectral centroid in Hz, flux, RMS, 50%/80% rolloff); right = fps, frame ms,
 GPU adapter; bottom = device, backend, rate, FFT/window/hop, history depth,
