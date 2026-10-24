@@ -263,6 +263,7 @@ pub fn load_file(path: &Path) -> Result<Theme, String> {
 }
 
 pub mod cycler;
+pub mod watch;
 
 // The resolution + hex tests live in tests.rs (inline-module style).
 #[cfg(test)]

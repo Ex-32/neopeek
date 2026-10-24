@@ -33,6 +33,23 @@ impl Cycler {
     pub fn current(&self) -> &crate::LoadedTheme {
         &self.entries[self.pos]
     }
+
+    /// Replaces the entry sourced at `path` (the watched custom theme).
+    /// Returns `true` when replaced — `false` means the cycler holds no
+    /// file theme matching the path (caller logs).
+    pub fn reload(&mut self, path: &std::path::Path, theme: crate::Theme) -> bool {
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|l| l.path.as_deref() == Some(path));
+        match entry {
+            Some(l) => {
+                l.theme = theme;
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 impl Default for Cycler {
@@ -59,6 +76,25 @@ mod tests {
         assert_eq!(c.cycle().theme.name, "Ice");
         assert_eq!(c.cycle().theme.name, "Terminal");
         assert_eq!(c.cycle().theme.name, "Ember"); // wrapped, Ember not duped
+    }
+
+    #[test]
+    fn reload_replaces_only_the_file_entry() {
+        let p = std::path::PathBuf::from("/tmp/nope.ron");
+        let mut c = Cycler::new(custom("MyStuff")); // path == /tmp/nope.ron
+        // Advance to Ice, then reload the file entry.
+        c.cycle(); // Ember
+        let mut t = crate::builtin("Terminal").unwrap();
+        t.name = "Tweaked".to_owned();
+        assert!(c.reload(&p, t.clone()));
+        // Cycle until the custom slot: it must now hold the reloaded theme.
+        loop {
+            if c.cycle().theme.name == "Tweaked" {
+                break;
+            }
+        }
+        // Reload of an unknown path fails cleanly.
+        assert!(!c.reload(std::path::Path::new("/tmp/other.ron"), t.clone()));
     }
 
     #[test]

@@ -44,6 +44,9 @@ pub struct App {
     frame_ms: f32,
     // theming (M7)
     cycler: Cycler,
+    /// `--watch-theme`: reload feed for the loaded custom file.
+    watch: Option<neopeek_theme::watch::ReloadWatcher>,
+    watch_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,12 +56,32 @@ enum DragButton {
 }
 
 impl App {
-    pub fn new(device: Option<String>, autospin: bool, theme_arg: Option<String>) -> Self {
+    pub fn new(device: Option<String>, autospin: bool, theme_arg: Option<String>, watch: bool) -> Self {
         let (init, warn) = neopeek_theme::resolve(theme_arg.as_deref());
         if let Some(msg) = warn {
             tracing::warn!("{msg}");
         }
         tracing::info!(theme = %init.theme.name, "theme loaded");
+        // `--watch-theme` needs a *file* theme; built-ins watch nothing.
+        let (watch, watch_path) = if watch {
+            match init.path.clone() {
+                Some(path) => {
+                    match neopeek_theme::watch::ReloadWatcher::spawn(path.clone()) {
+                        Some(w) => (Some(w), Some(path)),
+                        None => {
+                            tracing::warn!("could not start theme watcher");
+                            (None, None)
+                        }
+                    }
+                }
+                None => {
+                    tracing::info!("--watch-theme: no theme file loaded, nothing to watch");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
         let mut app = Self {
             window: None,
             renderer: None,
@@ -75,6 +98,8 @@ impl App {
             fps: 0.0,
             frame_ms: 0.0,
             cycler: Cycler::new(init),
+            watch,
+            watch_path,
         };
         app.apply_theme_knobs();
         app
@@ -314,6 +339,13 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // `--watch-theme`: swap in the latest re-parsed theme file.
+        if let (Some(path), Some(w)) = (self.watch_path.as_deref(), &self.watch) {
+            if let Some(theme) = w.try_latest() {
+                tracing::info!(theme = %theme.name, "theme reloaded");
+                self.cycler.reload(path, theme);
+            }
+        }
         self.request_redraw();
     }
 }

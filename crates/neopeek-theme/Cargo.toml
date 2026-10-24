@@ -10,4 +10,5 @@ authors.workspace = true
 serde = { workspace = true, features = ["derive"] }
 ron.workspace = true
 directories.workspace = true
+notify.workspace = true
 tracing.workspace = true
