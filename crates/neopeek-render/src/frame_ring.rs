@@ -106,6 +106,22 @@ mod tests {
         assert!(prod.try_push(frame(u64::MAX)).is_ok());
     }
 
+    /// `bin_count` rides the ring intact: a frame produced at a smaller
+    /// FFT size keeps its valid-bin count through push/pop (the ring is
+    /// an opaque POD pipe — no reinterpretation in either direction).
+    #[test]
+    fn ring_roundtrip_preserves_bin_count() {
+        let (mut prod, mut cons) = frame_pair();
+        let mut f = frame(7);
+        f.bin_count = 256; // fft_size 512 geometry
+        f.bins[255] = 1.5;
+        prod.try_push(f).unwrap();
+        let mut out = Vec::new();
+        assert_eq!(drain_into(&mut cons, &mut out, 1), 1);
+        assert_eq!(out[0].bin_count, 256);
+        assert_eq!(out[0].bins[255], 1.5);
+    }
+
     #[test]
     fn has_pending_tracks_undrained_frames() {
         let (mut prod, cons) = frame_pair();

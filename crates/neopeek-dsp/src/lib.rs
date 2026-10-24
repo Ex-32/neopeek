@@ -17,9 +17,17 @@ use rustfft::{FftPlanner, num_complex::Complex};
 /// Audio samples per analysis window/hop (sndpeek `SND_BUFFER_SIZE`).
 pub const WINDOW_FRAMES: usize = 1024;
 /// FFT length: the window zero-padded out from 1024 to 2048 (display path).
+///
+/// Runtime-adjustable since the FFT-size feature: the *engine* builds its
+/// plan for any size on the [`FFT_SIZES`] ladder (see [`Engine::new`] /
+/// [`Engine::set_fft_size`]); this constant remains only the default. It
+/// disappears once every consumer is migrated.
 pub const FFT_SIZE: usize = 2048;
 /// Magnitude bins per slice (`FFT_SIZE/2`).
 pub const BINS: usize = FFT_SIZE / 2;
+/// Largest bin count any supported FFT size can produce
+/// (`FFT_SIZES.last()/2 = 8192/2`).
+pub const MAX_BINS: usize = 4096;
 /// Channel count of interleaved input.
 pub const CHANNELS: usize = 2;
 /// Frames per feature moving average (sndpeek `LP`).
@@ -27,12 +35,20 @@ pub const LP_TAPS: usize = 4;
 
 /// One waterfall slice plus live audio meters/features.
 ///
-/// Fixed-size POD so it fits in a lock-free ring with no allocation.
+/// Fixed-size POD so it fits in a lock-free ring with no allocation. The
+/// FFT size is runtime-adjustable, so the bin array is sized for the
+/// largest supported transform (`MAX_BINS`) and the *valid* count rides
+/// along in [`Frame::bin_count`]: only `bins[0..bin_count]` carries
+/// spectrum, the tail is always zero-filled by the producer. Consumers
+/// must bound their loops by `bin_count` (a zero tail cannot corrupt a
+/// max/sum, but index-based feature math must not see the pad).
 #[derive(Debug, Clone, Copy)]
 pub struct Frame {
     pub seq: u64,
-    /// `|X_k|` for k = 0..BINS of the windowed, zero-padded FFT.
-    pub bins: [f32; BINS],
+    /// `|X_k|` for k = 0..`bin_count` of the windowed, zero-padded FFT.
+    pub bins: [f32; MAX_BINS],
+    /// Valid magnitude-bin count (`fft_size / 2` of the producing engine).
+    pub bin_count: u32,
     /// Last window of mono (averaged) samples, for waveform/Lissajous.
     pub mono: [f32; WINDOW_FRAMES],
     /// Last window of the left channel (true Lissajous).
@@ -64,7 +80,8 @@ impl Default for Frame {
     fn default() -> Self {
         Self {
             seq: 0,
-            bins: [0.0; BINS],
+            bins: [0.0; MAX_BINS],
+            bin_count: 0,
             mono: [0.0; WINDOW_FRAMES],
             left: [0.0; WINDOW_FRAMES],
             right: [0.0; WINDOW_FRAMES],
@@ -206,7 +223,7 @@ pub struct Engine {
     right: [f32; WINDOW_FRAMES],
     max_l_r_diff: f32,
     max_l_r_abs: f32,
-    prev_bins: [f32; BINS],
+    prev_bins: [f32; MAX_BINS],
     seq: u64,
     smooth_centroid: MovingAverage,
     smooth_flux: MovingAverage,
@@ -235,7 +252,7 @@ impl Engine {
             right: [0.0; WINDOW_FRAMES],
             max_l_r_diff: 0.0,
             max_l_r_abs: 0.0,
-            prev_bins: [0.0; BINS],
+            prev_bins: [0.0; MAX_BINS],
             seq: 0,
             smooth_centroid: MovingAverage::default(),
             smooth_flux: MovingAverage::default(),
@@ -304,8 +321,13 @@ impl Engine {
         self.fft
             .process_with_scratch(&mut self.input, &mut self.scratch);
 
-        let mut mags = [0f32; BINS];
-        for (k, slot) in mags.iter_mut().enumerate() {
+        // Magnitude bins for k = 0..fft_size/2 (real input ⇒ conjugate-
+        // symmetric spectrum; the upper half carries no display data).
+        // The mags tail beyond `bin_count` stays zero: `Frame` is POD
+        // sized for MAX_BINS, and only `bins[0..bin_count]` is valid.
+        let bin_count = self.input.len() / 2;
+        let mut mags = [0f32; MAX_BINS];
+        for (k, slot) in mags[..bin_count].iter_mut().enumerate() {
             let m =
                 (self.input[k].re * self.input[k].re + self.input[k].im * self.input[k].im).sqrt();
             // Belt-and-braces on top of the input sanitize: keeps us
@@ -315,16 +337,18 @@ impl Engine {
             // history forever.
             *slot = if m.is_finite() { m } else { 0.0 };
         }
-        let raw_flux = flux(&mags, &self.prev_bins);
-        let c = centroid(&mags);
-        let r50 = rolloff(&mags, 0.5);
-        let r80 = rolloff(&mags, 0.8);
+        let valid = &mags[..bin_count];
+        let raw_flux = flux(valid, &self.prev_bins[..bin_count]);
+        let c = centroid(valid);
+        let r50 = rolloff(valid, 0.5);
+        let r80 = rolloff(valid, 0.8);
         self.prev_bins = mags;
 
         self.seq += 1;
         Some(Frame {
             seq: self.seq,
             bins: mags,
+            bin_count: bin_count as u32,
             mono: self.mono,
             left: self.left,
             right: self.right,
@@ -581,15 +605,40 @@ mod tests {
         // Must stay a plain Copy POD to live in the lock-free ring.
         fn assert_copy<T: Copy>() {}
         assert_copy::<Frame>();
-        // 4×1024-sample f32 arrays (bins, mono, left, right) + u64 seq +
-        // 2×2 channel f32 (rms, peak) + 5 scalar f32 (centroid, flux,
-        // rolloff50/80, mono_like-as-u32).
+        // MAX_BINS-magnitude array + mono/left/right (3×1024) + u64 seq +
+        // u32 bin_count + 2×2 channel f32 (rms, peak) + 4 scalar f32
+        // (centroid, flux, rolloff50/80) + 1 bool (mono_like).
         let expected = std::mem::size_of::<u64>()
-            + 4 * WINDOW_FRAMES * std::mem::size_of::<f32>()
+            + MAX_BINS * std::mem::size_of::<f32>()
+            + 3 * WINDOW_FRAMES * std::mem::size_of::<f32>()
+            + std::mem::size_of::<u32>()
+            + std::mem::size_of::<u8>() // mono_like
             + 4 * std::mem::size_of::<f32>()
-            + 5 * std::mem::size_of::<f32>();
+            + 4 * std::mem::size_of::<f32>();
         let aligned = expected.div_ceil(8) * 8; // u64 alignment of field 1
         assert_eq!(std::mem::size_of::<Frame>(), aligned.max(8));
+        // Ring budget: 256 frames ≈ 7 MB with the MAX_BINS-sized array.
+        assert_eq!(
+            std::mem::size_of::<Frame>(),
+            28_720,
+            "unexpected Frame growth"
+        );
+    }
+
+    /// The producer fills only the valid head; the pad tail is zeroed so
+    /// downstream max/sum scans never see stale magnitudes.
+    #[test]
+    fn frame_bins_tail_is_zeroed() {
+        let mut engine = Engine::new();
+        let frame = engine
+            .process_window(&sine_interleaved(1000.0, WINDOW_FRAMES))
+            .expect("window processed");
+        assert_eq!(frame.bin_count, (FFT_SIZE / 2) as u32);
+        assert!(frame.bins[..frame.bin_count as usize].iter().any(|m| *m > 0.0));
+        assert!(
+            frame.bins[frame.bin_count as usize..].iter().all(|m| *m == 0.0),
+            "pad tail must be zero-filled"
+        );
     }
 
     #[test]
