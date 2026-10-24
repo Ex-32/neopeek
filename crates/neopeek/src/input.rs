@@ -365,7 +365,7 @@ mod tests {
     fn log_factor_keys_scale_and_clamp() {
         let mut s = ViewSettings::default();
         handle_key(&mut s, "c");
-        assert!((s.log_factor - 1.575).abs() < 1e-3, "got {}", s.log_factor);
+        assert!((s.log_factor - 1.725).abs() < 1e-3, "got {}", s.log_factor);
         while s.log_factor > 0.0 {
             handle_key(&mut s, "v");
         }

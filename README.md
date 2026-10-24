@@ -39,7 +39,7 @@ Mouse: left-drag orbit · shift-/middle-drag pan · wheel zoom.
 | `u` / `i` | slice z-spacing wider/narrower |
 | `j` / `k` | waterfall z-offset toward/away |
 | `PageUp` / `PageDown` | waterfall history layers (depth), 8…256 — also set at startup with `--depth <n>` (default 48) |
-| `c` / `v` | waterfall frequency-axis log factor ×1.05 / ×0.95 (`v` flattens toward linear) |
+| `c` / `v` | waterfall frequency-axis log factor ×1.15 / ×0.87 (`v` flattens toward linear) |
 | `-` / `=` | spectrum frequency axis ×0.99 / ×1.01 |
 | `_` / `+` | waveform vertical scale |
 | `l` / `L` | Lissajous figure scale |

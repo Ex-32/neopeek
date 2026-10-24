@@ -171,8 +171,10 @@ const OVERLAY_TOP: f32 = 30.0;
 const BOTTOM_PAD: f32 = 4.0;
 /// Gap between the device line and the hints line(s).
 const BOTTOM_LINE_GAP: f32 = 2.0;
-/// Keybind hints wrap to two lines so every bind fits the surface width.
-pub const HINT_LINES: usize = 2;
+/// Keybind hints wrap to three lines so every bind fits the surface
+/// width — the two-line version dropped the newest binds (c/v log
+/// factor, PageUp/PageDown depth).
+pub const HINT_LINES: usize = 3;
 
 /// Top-left anchor positions of the five HUD text panels, in **physical**
 /// pixels, computed from the current surface size, DPI scale and font
@@ -212,9 +214,12 @@ pub fn hud_text_anchors(
     [
         (HUD_MARGIN * scale, feature_top * scale),
         // Tiny windows × large scales can push the right-anchored column
-        // past the left edge; clamp so the text stays visible.
+        // past the left edge; clamp so the text stays visible. The device
+        // line gets the same treatment in height: three hint lines (46…
+        // 86 logical px of bottom stack) can otherwise pull it above the
+        // top edge in the same degenerate combos.
         ((w - PERF_COL_W * scale).max(HUD_MARGIN * scale), HUD_MARGIN * scale),
-        (HUD_MARGIN * scale, device_top),
+        (HUD_MARGIN * scale, device_top.max(HUD_MARGIN * scale)),
         (
             (w / 2.0 - OVERLAY_HALF_W * scale).max(0.0),
             (h / 2.0 - OVERLAY_TOP * scale).max(0.0),
@@ -363,12 +368,32 @@ mod tests {
     fn anchors_stay_on_surface_across_scales_and_sizes() {
         for &(w, h) in &[(800, 600), (1600, 1200), (1280, 720), (300, 200)] {
             for scale in [0.75, 1.0, 1.25, 1.5, 2.0, 3.0] {
-                for hint_lines in [0usize, 1, 2] {
+                for hint_lines in [0usize, 1, 2, 3] {
                     let anchors = hud_text_anchors(w, h, scale, FONT_PX, hint_lines);
                     for (i, &(x, y)) in anchors.iter().enumerate() {
                         assert!(
                             x >= 0.0 && x < w as f32 && y >= 0.0 && y < h as f32,
                             "panel {i} anchor ({x}, {y}) off-surface at {w}×{h}, scale {scale}, hint_lines {hint_lines}"
+                        );
+                    }
+                    // The hints block must stack above the device line,
+                    // leaving the device stats on-surface too (empty
+                    // hint_lines = 0 anchors the block at the edge — no
+                    // relation to the device line there).
+                    // The device line must stack above the hints top — but
+                    // only while the geometry is unclamped: in degenerate
+                    // tiny-window × big-scale × many-hint-line combos the
+                    // bottom stack alone can exceed the height and both
+                    // anchors clamp to the top margin (see hud_text_anchors).
+                    let line_h = FONT_PX * 1.43;
+                    let unclamped_device_top =
+                        h as f32 - (BOTTOM_PAD + (hint_lines + 1) as f32 * line_h + BOTTOM_LINE_GAP) * scale;
+                    if hint_lines > 0 && unclamped_device_top >= HUD_MARGIN * scale {
+                        assert!(
+                            anchors[2].1 <= anchors[4].1,
+                            "device line {} must stack above the hints top {} at {w}×{h}, scale {scale}, hint_lines {hint_lines}",
+                            anchors[2].1,
+                            anchors[4].1,
                         );
                     }
                 }

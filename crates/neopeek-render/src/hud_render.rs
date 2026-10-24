@@ -392,13 +392,16 @@ fn device_panel(ui: &mut HudUI, hud: &HudData) {
 }
 
 /// The keybind dump lives in its own buffer so the theme's `dim` color
-/// can shade it independently of the stats line. Two lines: the single
-/// line overflowed the surface width and its tail was cut off.
+/// can shade it independently of the stats line. Three lines: the
+/// single line overflowed the surface width and its tail was cut off,
+/// and the two-line version had no room left for the depth/log-factor
+/// binds.
 fn hints_panel(ui: &mut HudUI) {
     let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
     let text = concat!(
-        "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · 1 wave · 2 liss · 3 waterfall · S surface · d dB · r rainbow · u i spacing\n",
-        "j k z-offset · l L liss · < > width · y liss-delay · f freeze · m mute · h hints · H hud · T theme · F X Y Z snap · p print · q quit",
+        "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · F reset · X Y Z snap · 1 wave · 2 liss · 3 waterfall · S surface\n",
+        "d dB · r rainbow · u i spacing · j k z-offset · PageUp PgDn depth · c v log-axis · - = spectrum · _ + wave · l L liss · < > width\n",
+        "y liss-delay · f freeze · m mute · h hints · H hud · T theme · p print · q quit",
     );
     ui.buffers[4].set_text(text, &attrs, Shaping::Advanced, None);
 }

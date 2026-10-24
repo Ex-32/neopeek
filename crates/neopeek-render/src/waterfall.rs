@@ -503,7 +503,7 @@ mod tests {
         assert!(!needs_rebuild(8.0, 8.0), "ceiling key press");
         assert!(!needs_rebuild(0.0, 0.0), "pinned floor (`v` on exact zero)");
         assert!(needs_rebuild(0.0, 8.0), "clamped-domain extremes rebuild");
-        assert!(needs_rebuild(1.5, 1.575), "a single c press");
+        assert!(needs_rebuild(1.5, 1.725), "a single c press");
         assert!(needs_rebuild(0.0, 0.05), "stepping off the exact linear axis");
         assert!(needs_rebuild(8.0, 0.0), "collapsing back to fully linear");
     }
@@ -520,15 +520,16 @@ mod tests {
         let mut prev = start;
         let mut rebuilt = 0usize;
         for _ in 0..64 {
-            s.adjust_log_factor(true); // `c`: ×1.05, clamped at 8.0
+            s.adjust_log_factor(true); // `c`: ×1.15, clamped at 8.0
             rebuilt += usize::from(needs_rebuild(prev, s.log_factor));
             prev = s.log_factor;
         }
         assert!((s.log_factor - 8.0).abs() < 1e-4, "clamped at {:?}", s.log_factor);
-        assert!(rebuilt > 30, "c presses rebuild until the ceiling: {rebuilt}");
+        // Snappy steps: ~12 presses traverse the whole 1.5…8.0 range.
+        assert!(rebuilt > 10, "c presses rebuild until the ceiling: {rebuilt}");
         assert!(!needs_rebuild(prev, s.log_factor), "ceiling presses stay silent");
         while s.log_factor > 0.0 {
-            s.adjust_log_factor(false); // `v`: ×0.95, snaps to 0.0 below 0.05
+            s.adjust_log_factor(false); // `v`: ×0.87, snaps to 0.0 below 0.05
         }
         assert!(needs_rebuild(prev, s.log_factor), "the exact linear axis is a change");
         prev = s.log_factor;
