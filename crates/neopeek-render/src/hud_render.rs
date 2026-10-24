@@ -312,8 +312,14 @@ impl HudUI {
         // (omitted when hidden), overlay centered. `TextArea.left/top`
         // are physical; glyphon scales the buffer's logical glyph
         // coordinates itself.
+        // Reserve only as many hint lines as are actually shown: when
+        // hints are hidden, pass 0 so the device line anchors to the
+        // true bottom margin instead of floating above an invisible
+        // hints block (previously the constant HINT_LINES was always
+        // passed, leaving a gap where the hints used to be).
+        let hint_lines = if hud.show_hints { crate::hud::HINT_LINES } else { 0 };
         let anchors =
-            crate::hud::hud_text_anchors(width, height, scale, self.font_px, crate::hud::HINT_LINES);
+            crate::hud::hud_text_anchors(width, height, scale, self.font_px, hint_lines);
         let hint_color = Theme::rgb8(&theme.hud.dim);
         let ours: [Area; 4] = [
             (&self.buffers[0], anchors[0], text),

@@ -428,6 +428,34 @@ mod tests {
         // The buggy formula gave (600−46)·2 = 1108 ≥ height 600.
     }
 
+    /// With hints hidden (`hint_lines = 0`) the device line must anchor to
+    /// the actual bottom margin — this is how `hud_text_anchors` is fed 0
+    /// when `HudData.show_hints` is false, moving the stats line down
+    /// instead of leaving it floating where the hidden hints block was.
+    /// The bottom margin is the line height plus padding (the device line
+    /// stacks directly above the bottom edge): h − (4 + 2 + line_h)·scale.
+    #[test]
+    fn device_line_anchors_to_bottom_when_hints_hidden() {
+        let line_h = FONT_PX * 1.43;
+        let expected = |h: f32, scale: f32| h - (BOTTOM_PAD + BOTTOM_LINE_GAP + line_h) * scale;
+        for &(w, h) in &[(800u32, 600u32), (1600, 1200), (1280, 720), (300, 200)] {
+            for scale in [1.0f32, 1.25, 1.5, 2.0] {
+                let a = hud_text_anchors(w, h, scale, FONT_PX, 0);
+                let want = expected(h as f32, scale);
+                // The bottom margin must land above the clamp floor
+                // (HUD_MARGIN·scale) for these non-degenerate sizes, and
+                // the device line sits there, not clamped away from it.
+                assert!(want > HUD_MARGIN * scale);
+                approx(a[2].1, want, 1e-2);
+            }
+        }
+        // Regression: hints shown (3 lines) stacks higher; hidden (0)
+        // drops the device line strictly lower (closer to the bottom).
+        let shown = hud_text_anchors(800, 600, 1.0, FONT_PX, HINT_LINES)[2].1;
+        let hidden = hud_text_anchors(800, 600, 1.0, FONT_PX, 0)[2].1;
+        assert!(hidden > shown, "hidden device line {} should sit lower (larger y) than with hints {}", hidden, shown);
+    }
+
     #[test]
     fn db_math() {
         assert_eq!(rms_to_db(1.0), 0.0);
