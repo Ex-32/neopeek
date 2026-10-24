@@ -34,7 +34,7 @@ pub const AUTOSCALE_TARGET_Y: f32 = 1.684;
 pub const GAIN_MIN: f32 = 0.05;
 pub const GAIN_MAX: f32 = 20.0;
 
-/// Fast attack: one observed slice lumks the smoothed level this far
+/// Fast attack: one observed slice jumps the smoothed level this far
 /// toward a newly louder value; ≈ 2 slices (~43 ms) to close.
 const ATTACK_SLICES: f32 = 2.0;
 /// Slow release: the number of slice cadences it takes the smoothed
