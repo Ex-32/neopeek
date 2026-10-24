@@ -87,6 +87,8 @@ pub struct Waterfall {
     grid_log_factor: f32,
     /// Grid layer count (matches the bound history texture height).
     grid_depth: usize,
+    /// Grid bin count (matches the frames the engine produces).
+    grid_bins: usize,
     /// Filled-surface mode (M8): triangle topology over the same grid.
     surface_pipeline: wgpu::RenderPipeline,
     surface_ib: wgpu::Buffer,
@@ -103,6 +105,7 @@ impl Waterfall {
         depth_format: wgpu::TextureFormat,
         log_factor: f32,
         depth: usize,
+        bins: usize,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("neopeek-waterfall-shader"),
@@ -203,12 +206,13 @@ impl Waterfall {
             cache: None,
         });
 
-        // Static grid, allocated once here; replaced only on a log-factor
-        // or depth change (`set_log_factor` / `set_depth`).
-        let (vb, ib, index_count) = create_grid_buffers(device, log_factor, depth);
+        // Static grid, allocated once here; replaced only on a log-factor,
+        // depth, or FFT-size change (`set_log_factor` / `set_depth` /
+        // `set_fft_size`).
+        let (vb, ib, index_count) = create_grid_buffers(device, log_factor, depth, bins);
 
         // Filled-surface mode (M8): same VB, triangle index buffer.
-        let surface_index_list = grid::surface_indices(depth);
+        let surface_index_list = grid::surface_indices(depth, bins);
         let surface_index_count = surface_index_list.len() as u32;
         let surface_ib = create_buffer_from(
             device,
@@ -286,6 +290,7 @@ impl Waterfall {
             index_count,
             grid_log_factor: log_factor,
             grid_depth: depth,
+            grid_bins: bins,
             surface_pipeline,
             surface_ib,
             surface_index_count,
@@ -331,7 +336,7 @@ impl Waterfall {
         if !needs_rebuild(self.grid_log_factor, factor) {
             return;
         }
-        let verts = grid::grid_vertices(factor, self.grid_depth);
+        let verts = grid::grid_vertices(factor, self.grid_depth, self.grid_bins);
         queue.write_buffer(&self.vb, 0, bytemuck::cast_slice(&verts));
         self.grid_log_factor = factor;
         let _ = device;
@@ -359,8 +364,9 @@ impl Waterfall {
         if depth == self.grid_depth {
             return;
         }
-        let (vb, ib, index_count) = create_grid_buffers(device, self.grid_log_factor, depth);
-        let surface_index_list = grid::surface_indices(depth);
+        let (vb, ib, index_count) =
+            create_grid_buffers(device, self.grid_log_factor, depth, self.grid_bins);
+        let surface_index_list = grid::surface_indices(depth, self.grid_bins);
         self.surface_ib = create_buffer_from(
             device,
             "neopeek-waterfall-surface-indices",
@@ -374,6 +380,33 @@ impl Waterfall {
         self.bind_group =
             grid_bind_group(device, &self.bgl, &self.uniform, history_view, &self.ramp_view);
         self.grid_depth = depth;
+    }
+
+    /// Rebuilds the grid + index buffers for a changed FFT bin count
+    /// (called after the engine switched size — see
+    /// `Renderer::set_fft_size`). Unlike [`Self::set_depth`] this needs
+    /// **no** bind-group rebuild: the history texture is allocated at
+    /// `MAX_BINS` width once and only the first `bins` columns are
+    /// written/read, so the texture view stays valid. The grid is built
+    /// with the current log factor, so the knobs compose.
+    pub fn set_fft_size(&mut self, device: &wgpu::Device, bins: usize) {
+        if bins == self.grid_bins {
+            return;
+        }
+        let (vb, ib, index_count) =
+            create_grid_buffers(device, self.grid_log_factor, self.grid_depth, bins);
+        let surface_index_list = grid::surface_indices(self.grid_depth, bins);
+        self.surface_ib = create_buffer_from(
+            device,
+            "neopeek-waterfall-surface-indices",
+            bytemuck::cast_slice(&surface_index_list),
+            wgpu::BufferUsages::INDEX,
+        );
+        self.surface_index_count = surface_index_list.len() as u32;
+        self.vb = vb;
+        self.ib = ib;
+        self.index_count = index_count;
+        self.grid_bins = bins;
     }
 
     pub fn upload_uniform(&self, queue: &wgpu::Queue, uniforms: &WaterUniforms) {
@@ -402,9 +435,10 @@ fn create_grid_buffers(
     device: &wgpu::Device,
     log_factor: f32,
     depth: usize,
+    bins: usize,
 ) -> (wgpu::Buffer, wgpu::Buffer, u32) {
-    let verts = grid::grid_vertices(log_factor, depth);
-    let indices = grid::grid_indices(depth);
+    let verts = grid::grid_vertices(log_factor, depth, bins);
+    let indices = grid::grid_indices(depth, bins);
     let index_count = indices.len() as u32;
     let vert_bytes: &[u8] = bytemuck::cast_slice(&verts);
     let index_bytes: &[u8] = bytemuck::cast_slice(&indices);
@@ -539,8 +573,8 @@ mod tests {
         assert!(needs_rebuild(prev, s.log_factor), "0.0 → 0.05 steps off the floor");
         // End-state proof: the grid the waterfall would now upload differs
         // in vertex data from the start grid (same length — see grid tests).
-        let start_grid = grid::grid_vertices(start, crate::grid::DEFAULT_DEPTH);
-        let end_grid = grid::grid_vertices(s.log_factor, crate::grid::DEFAULT_DEPTH);
+        let start_grid = grid::grid_vertices(start, crate::grid::DEFAULT_DEPTH, neopeek_dsp::DEFAULT_BINS);
+        let end_grid = grid::grid_vertices(s.log_factor, crate::grid::DEFAULT_DEPTH, neopeek_dsp::DEFAULT_BINS);
         assert!(start_grid.len() == end_grid.len() && start_grid != end_grid,
             "axis moved end-to-end at {:?}", s.log_factor);
     }

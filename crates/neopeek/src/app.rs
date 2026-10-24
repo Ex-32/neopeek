@@ -334,7 +334,7 @@ impl ApplicationHandler for App {
         // The ring lives frame-long; its producer half goes to the DSP
         // thread, the consumer to the renderer.
         let (frame_prod, frame_cons) = Renderer::frame_pair();
-        match Renderer::new(window.clone(), frame_cons, self.settings.depth) {
+        match Renderer::new(window.clone(), frame_cons, self.settings.depth, self.settings.fft_size) {
             Ok(mut renderer) => {
                 renderer.set_theme_ramp(self.theme());
                 match AudioPipeline::start(self.device.take(), frame_prod) {

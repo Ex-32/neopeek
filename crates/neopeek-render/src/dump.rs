@@ -14,6 +14,7 @@ pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
          magnitude: {}, rainbow: {}, frozen: {}, muted: {}, auto_scale: {}\n\
          spacing: {:.4}, z_offset: {:+.3}, log_factor: {:.3}\n\
          depth: {} layers (history slices)\n\
+         fft_size: {} (window {} fixed — bigger = finer interpolation)\n\
          freq_scale: {:.3}, wave_scale: {:.3}, liss_scale: {:.3}\n\
          strip_width: {:.4}, liss_delay: {}\n\
          idle_pause: {:?} (0 = off)\n\
@@ -34,6 +35,8 @@ pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
         settings.z_offset,
         settings.log_factor,
         settings.depth,
+        settings.fft_size,
+        neopeek_dsp::WINDOW_FRAMES,
         settings.freq_scale,
         settings.wave_scale,
         settings.liss_scale,
@@ -72,6 +75,7 @@ mod tests {
             "auto_scale: off",
             "log_factor: 1.500",
             "depth: 48 layers",
+            "fft_size: 2048",
             "spacing: 0.1200",
             "liss_scale: 0.450",
             "strip_width: 0.0040",
@@ -93,11 +97,13 @@ mod tests {
         s.toggle_db();
         s.toggle_freeze();
         s.toggle_auto_scale();
+        s.set_fft_size_exact(8192);
         c.orbit(1.0, 0.0);
         let txt = settings_string(&s, &c);
         assert!(txt.contains("magnitude: dB"));
         assert!(txt.contains("frozen: on"));
         assert!(txt.contains("auto_scale: on"));
+        assert!(txt.contains("fft_size: 8192"));
         assert!(txt.contains("azimuth = 1.000"));
     }
 }

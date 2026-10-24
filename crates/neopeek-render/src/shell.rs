@@ -99,6 +99,7 @@ impl Renderer {
         window: Arc<Window>,
         frame_cons: FrameCons,
         depth: usize,
+        fft_size: usize,
     ) -> Result<Self, ShellError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle().with_env());
 
@@ -170,6 +171,7 @@ impl Renderer {
             wgpu::TextureFormat::Depth24Plus,
             1.5,
             depth,
+            fft_size / 2,
         );
         // Default view strip colors (sndpeek): waveform blue, lissajous yellow.
         let strip_verts = (2 * WINDOW_FRAMES) as u64; // quad strips: 2 verts/point
@@ -271,6 +273,15 @@ impl Renderer {
         self.waterfall
             .set_depth(&self.device, depth, &new_history.view);
         self.history = new_history;
+    }
+
+    /// Applies a new FFT size: rebuilds the waterfall grid/index buffers
+    /// for the new bin count. The history texture needs no swap — it is
+    /// allocated at `MAX_BINS` width and only the first `size/2` columns
+    /// are written and read. No-op when the size already matches (called
+    /// on every fft-size key; only a change rebuilds).
+    pub fn set_fft_size(&mut self, fft_size: usize) {
+        self.waterfall.set_fft_size(&self.device, fft_size / 2);
     }
 
     /// Uploads the theme's surface ramp — only when it differs from the
@@ -476,7 +487,10 @@ impl Renderer {
         let mut frame_max = 0.0f32;
         for frame in &self.scratch_frames {
             self.history.write_slice(&self.queue, frame);
-            let max_bin = frame.bins.iter().copied().fold(0.0f32, f32::max);
+            let max_bin = frame.bins[..frame.bin_count as usize]
+                .iter()
+                .copied()
+                .fold(0.0f32, f32::max);
             frame_max = frame_max.max(max_bin);
             // `a` auto-scale: fold this slice's max raw bin magnitude
             // (zero-alloc iterator fold) into the adaptive state.

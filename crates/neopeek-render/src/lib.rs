@@ -5,8 +5,9 @@
 //! - [`camera`]: fixed M4 camera + minimal mat4 math (orbit controls land in M5).
 //! - [`grid`]: CPU precompute of the waterfall vertex grid (log-frequency
 //!   positions, x-span, depth layout) and its index buffer.
-//! - [`history`]: the 1024×48 `R32Float` history texture ring (head wrap in
-//!   the shader, no CPU row shifting).
+//! - [`history`]: the `MAX_BINS`×`depth` `R32Float` history texture ring
+//!   (head wrap in the shader, no CPU row shifting; only the current
+//!   FFT's bin columns are written/read).
 //! - [`frame_ring`]: the SPSC `Frame` ring between the DSP thread and render.
 //! - [`views`]: view settings + waveform/Lissajous line-strip builders.
 //! - [`autoscale`]: the content-adaptive waterfall-gain state machine (`a`).

@@ -39,6 +39,9 @@ pub const FFT_SIZES: [usize; 5] = [512, 1024, 2048, 4096, 8192];
 /// Default FFT length (sndpeek parity: 1024-sample window zero-padded
 /// to 2048).
 pub const DEFAULT_FFT_SIZE: usize = 2048;
+/// Magnitude bins of the default FFT (`DEFAULT_FFT_SIZE / 2`) — the
+/// geometry the display defaults were tuned at; runtime sizes vary.
+pub const DEFAULT_BINS: usize = DEFAULT_FFT_SIZE / 2;
 
 /// Whether `fft_size` is one of the supported [`FFT_SIZES`].
 pub fn is_fft_size(fft_size: usize) -> bool {

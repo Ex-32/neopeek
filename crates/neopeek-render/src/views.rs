@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use neopeek_dsp::{Frame, WINDOW_FRAMES};
+use neopeek_dsp::{Frame, DEFAULT_FFT_SIZE, FFT_SIZES, WINDOW_FRAMES};
 use crate::grid::{DEFAULT_DEPTH, MAX_DEPTH, MIN_DEPTH};
 
 /// Default vantage constants come from `crate::camera`; view constants here.
@@ -59,6 +59,11 @@ pub struct ViewSettings {
     /// (`grid::clamp_depth` bounds it; default `grid::DEFAULT_DEPTH`).
     /// Changing it rebuilds the history texture + grid buffers.
     pub depth: usize,
+    /// `o`/`n` + `--fft`: FFT length on [`neopeek_dsp::FFT_SIZES`]
+    /// (default [`neopeek_dsp::DEFAULT_FFT_SIZE`]). Changing it rebuilds
+    /// the renderer grid and restarts the DSP feature smoothing (new
+    /// spectrum geometry; the window stays 1024).
+    pub fft_size: usize,
     /// `-`/`=`: spectrum frequency scale (default 1.0).
     pub freq_scale: f32,
     /// `a`: content-adaptive waterfall gain (default off). While on, the
@@ -105,6 +110,7 @@ impl Default for ViewSettings {
             z_offset: 0.0,
             log_factor: 1.5,
             depth: DEFAULT_DEPTH,
+            fft_size: neopeek_dsp::DEFAULT_FFT_SIZE,
             freq_scale: 1.0,
             auto_scale: false,
             wave_scale: 1.0,
@@ -189,6 +195,32 @@ impl ViewSettings {
     /// the runtime keys apply, so `--depth 9999` means 256 layers.
     pub fn set_depth_clamped(&mut self, depth: usize) {
         self.depth = depth.clamp(MIN_DEPTH, MAX_DEPTH);
+    }
+
+    /// `o`/`n`: step one rung along the FFT ladder ([`FFT_SIZES`]), not
+    /// a ×2 multiply — the display geometry (Hz per bin, texture columns)
+    /// jumps visibly per rung. Clamped at both ends rather than wrapping:
+    /// a silent wrap 8192 → 512 would flip the axis geometry twice over
+    /// while the key keeps repeating. A no-op when pinned at a ladder end
+    /// *or* when the value is not on the ladder (defensive; `--fft`
+    /// validation is the front line).
+    pub fn adjust_fft_size(&mut self, up: bool) {
+        let Some(idx) = FFT_SIZES.iter().position(|&s| s == self.fft_size) else {
+            return;
+        };
+        let next = if up { idx + 1 } else { idx.saturating_sub(1) };
+        self.fft_size = FFT_SIZES[next.min(FFT_SIZES.len() - 1)];
+    }
+
+    /// Sets the FFT size from a user request (CLI flag): the value was
+    /// validated against the ladder at parse time, so it is taken
+    /// verbatim; a defensive off-ladder request falls back to the default.
+    pub fn set_fft_size_exact(&mut self, size: usize) {
+        self.fft_size = if FFT_SIZES.contains(&size) {
+            size
+        } else {
+            DEFAULT_FFT_SIZE
+        };
     }
 
     /// `<`/`>`: waveform/Lissajous strip width ×1.25 / ×0.8, clamped.
@@ -354,6 +386,7 @@ mod tests {
         assert!((s.spacing - 0.12).abs() < 1e-9);
         assert!((s.log_factor - 1.5).abs() < 1e-9);
         assert_eq!(s.depth, crate::grid::DEFAULT_DEPTH);
+        assert_eq!(s.fft_size, DEFAULT_FFT_SIZE);
         assert!((s.liss_scale - 0.45).abs() < 1e-9);
         assert!((s.z_offset - 0.0).abs() < 1e-9);
         assert!(s.waveform_on && s.lissajous_on && s.waterfall_on);
@@ -396,6 +429,46 @@ mod tests {
         assert_eq!(s.depth, 24);
         s.set_depth_clamped(9_999);
         assert_eq!(s.depth, crate::grid::MAX_DEPTH);
+    }
+
+    /// `o`/`n` step one rung along the ladder and clamp at both ends;
+    /// no multiplication, no wrap.
+    #[test]
+    fn fft_size_steps_the_ladder_and_clamps() {
+        let mut s = ViewSettings::default();
+        assert_eq!(s.fft_size, DEFAULT_FFT_SIZE);
+        s.adjust_fft_size(true);
+        assert_eq!(s.fft_size, 4096);
+        s.adjust_fft_size(false);
+        assert_eq!(s.fft_size, DEFAULT_FFT_SIZE);
+        s.adjust_fft_size(false);
+        assert_eq!(s.fft_size, 1024);
+        while s.fft_size > 512 {
+            s.adjust_fft_size(false);
+        }
+        assert_eq!(s.fft_size, 512, "512 is the floor");
+        s.adjust_fft_size(false);
+        assert_eq!(s.fft_size, 512, "pinned at the floor");
+        while s.fft_size < 8192 {
+            s.adjust_fft_size(true);
+        }
+        assert_eq!(s.fft_size, 8192, "8192 is the ceiling");
+        s.adjust_fft_size(true);
+        assert_eq!(s.fft_size, 8192, "pinned at the ceiling");
+    }
+
+    /// `--fft`: the CLI value was validated at parse time and is taken
+    /// verbatim; a defensive off-ladder value falls back to the default.
+    #[test]
+    fn set_fft_size_exact_takes_ladder_values() {
+        for size in FFT_SIZES {
+            let mut s = ViewSettings::default();
+            s.set_fft_size_exact(size);
+            assert_eq!(s.fft_size, size);
+        }
+        let mut s = ViewSettings::default();
+        s.set_fft_size_exact(3000);
+        assert_eq!(s.fft_size, DEFAULT_FFT_SIZE);
     }
 
     /// `c`/`v` log-factor adjustments scale, clamp, and snap.
