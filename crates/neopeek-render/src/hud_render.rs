@@ -356,17 +356,17 @@ impl HudUI {
         }
         self.viewport.update(queue, Resolution { width, height });
 
-        // Right-justify the top-right perf column: anchor it at
-        // `width − margin − widest-line px` (pure math in `hud.rs`,
-        // `perf_panel_x`) so long adapter names don't clip off the right
-        // edge. `self.texts[1]` is the composition the buffers already
-        // display, so this rides the same 4 Hz gate — no per-frame
-        // recomposition, no allocation.
+        // The perf column's real composition: adapter / fps / latency.
+        // The layout authority (`hud_text_anchors`) right-justifies
+        // `anchors[1].0` from the widest of these lines via
+        // `perf_panel_x` (hud.rs), so long adapter names grow leftwards
+        // instead of clipping off the right edge. `self.texts[1]` is the
+        // composition the buffers already display, so this rides the same
+        // 4 Hz gate — no per-frame recomposition, no allocation.
         let mut perf_lines = ["", "", ""];
         for (slot, line) in perf_lines.iter_mut().zip(self.texts[1].lines()) {
             *slot = line;
         }
-        let perf_left = crate::hud::perf_panel_x(width, scale, self.font_px, perf_lines);
 
         // Layout in physical pixels via the pure `hud_text_anchors`
         // (see hud.rs): feature panel below the meter quads, perf
@@ -380,8 +380,14 @@ impl HudUI {
         // hints block (previously the constant HINT_LINES was always
         // passed, leaving a gap where the hints used to be).
         let hint_lines = crate::hud::hint_lines_for(hud.show_hints);
-        let anchors =
-            crate::hud::hud_text_anchors(width, height, scale, self.font_px, hint_lines);
+        let anchors = crate::hud::hud_text_anchors(
+            width,
+            height,
+            scale,
+            self.font_px,
+            hint_lines,
+            perf_lines,
+        );
         let hint_color = Theme::rgb8(&theme.hud.dim);
         // Built as Option-flavored array — no per-frame Vec allocation.
         let ours: [Option<TextArea>; 5] = [
@@ -396,7 +402,7 @@ impl HudUI {
             }),
             Some(TextArea {
                 buffer: &self.buffers[1],
-                left: perf_left,
+                left: anchors[1].0,
                 top: anchors[1].1,
                 scale,
                 bounds: TextBounds::default(),
@@ -703,8 +709,10 @@ mod tests {
         assert_eq!(s.lines().collect::<Vec<_>>(), vec!["Vulkan", "60 fps", "16.6 ms"]);
     }
 
-    /// Right-justify rides the 4 Hz gate: the cached composition fed to
-    /// `perf_panel_x` is exactly the string the perf buffer displays.
+    /// Right-justify rides the 4 Hz gate: the cached composition `prepare`
+    /// hands `hud_text_anchors` is exactly the string the perf buffer
+    /// displays, and the anchor it consumes (`hud_text_anchors[1].0`)
+    /// is the pure `perf_panel_x` right-justified x for those lines.
     #[test]
     fn perf_panel_x_uses_cached_composition_lines() {
         let texts = panel_texts(&fixture_hud());
@@ -712,9 +720,15 @@ mod tests {
         for (slot, line) in lines.iter_mut().zip(texts[1].lines()) {
             *slot = line;
         }
-        let x = crate::hud::perf_panel_x(1280, 2.0, 14.0, lines);
-        let right = x
-            + 6.0 * crate::hud::MONO_ADVANCE_EM * 14.0 * 2.0;
-        assert!(right <= 1280.0 && x >= 10.0, "x {x}, right {right}");
+        let (w, scale, font_px) = (1280, 2.0, 14.0);
+        let x = crate::hud::perf_panel_x(w, scale, font_px, lines);
+        // The value `prepare` puts in the perf `TextArea.left`.
+        let anchor = crate::hud::hud_text_anchors(w, 720, scale, font_px, 1, lines)[1].0;
+        assert!((anchor - x).abs() < 1e-3, "anchor {anchor} != perf_panel_x {x}");
+        // Right edge flush within a fixed 6-char fps line's width of the
+        // margin (the fps line is the widest in the fixture composition).
+        let right = anchor
+            + 6.0 * crate::hud::MONO_ADVANCE_EM * font_px * scale;
+        assert!(right <= w as f32 && anchor >= 10.0, "anchor {anchor}, right {right}");
     }
 }

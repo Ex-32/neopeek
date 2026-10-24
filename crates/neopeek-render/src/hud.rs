@@ -162,10 +162,10 @@ pub fn center_overlay(frozen: bool, muted: bool) -> Vec<String> {
 }
 
 /// Text-panel layout offsets, logical pixels (scaled per panel below).
-/// 170 ≈ the widest perf-column line at the default 14 px font;
 /// 120/30 center the overlay; bottom offsets derive from the line
-/// height (`font_px · 1.43`, see [`hud_text_anchors`]).
-const PERF_COL_W: f32 = 170.0;
+/// height (`font_px · 1.43`, see [`hud_text_anchors`]); the perf
+/// column's x is right-justified from its real composition instead
+/// (see [`perf_panel_x`]).
 const OVERLAY_HALF_W: f32 = 120.0;
 const OVERLAY_TOP: f32 = 30.0;
 const BOTTOM_PAD: f32 = 4.0;
@@ -213,6 +213,13 @@ pub fn perf_panel_x(width: u32, scale: f32, font_px: f32, lines: [&str; 3]) -> f
 /// `[2]` device stats (bottom), `[3]` overlay (center), `[4]` keybind
 /// hints (bottom).
 ///
+/// This is the **single layout authority** for the panels — callers use
+/// its anchors directly and must not re-derive a panel's position. In
+/// particular, the perf column's x is right-justified here from its real
+/// composition via [`perf_panel_x`] (the widest of `perf_lines` decides),
+/// not from a fixed-width offset; `perf_lines` are exactly the three
+/// lines the perf buffer displays (adapter / fps / latency).
+///
 /// All offsets are logical pixels and are multiplied by `scale` here;
 /// the surface `width`/`height` are already physical, so they combine
 /// with the *scaled* offsets — never the other way around. (The previous
@@ -232,6 +239,7 @@ pub fn hud_text_anchors(
     scale: f32,
     font_px: f32,
     hint_lines: usize,
+    perf_lines: [&str; 3],
 ) -> [(f32, f32); 5] {
     let (w, h) = (width as f32, height as f32);
     // Line height matches the buffers' `Metrics` (hud_render).
@@ -242,17 +250,15 @@ pub fn hud_text_anchors(
     let device_top = h - (BOTTOM_PAD + hints_h + BOTTOM_LINE_GAP + line_h) * scale;
     let hints_top = h - (BOTTOM_PAD + hints_h) * scale;
     let feature_top = HUD_MARGIN + 2.0 * BAR_GAP + 6.0;
-    // Perf column: `PERF_COL_W` anchors it left of the right edge as a
-    // fallback; hud_render right-justifies the real composition via
-    // [`perf_panel_x`] (see [`MONO_ADVANCE_EM`]).
     [
         (HUD_MARGIN * scale, feature_top * scale),
-        // Tiny windows × large scales can push the right-anchored column
-        // past the left edge; clamp so the text stays visible. The device
-        // line gets the same treatment in height: three hint lines (46…
-        // 86 logical px of bottom stack) can otherwise pull it above the
-        // top edge in the same degenerate combos.
-        ((w - PERF_COL_W * scale).max(HUD_MARGIN * scale), HUD_MARGIN * scale),
+        // Right-justified x from the widest line; `perf_panel_x` clamps
+        // at the left margin so degenerate narrow windows cannot push
+        // the column off-surface. The device line gets the same clamp in
+        // height: three hint lines (46…86 logical px of bottom stack)
+        // can otherwise pull it above the top edge in the same degenerate
+        // combos.
+        (perf_panel_x(width, scale, font_px, perf_lines), HUD_MARGIN * scale),
         (HUD_MARGIN * scale, device_top.max(HUD_MARGIN * scale)),
         (
             (w / 2.0 - OVERLAY_HALF_W * scale).max(0.0),
@@ -392,6 +398,11 @@ mod tests {
     /// Default HUD font (Ember metrics; hud_render starts at this too).
     const FONT_PX: f32 = 14.0;
 
+    /// The perf column's three real lines (adapter / fps / latency);
+    /// mirrors what `perf_text` emits in hud_render.
+    const PERF_SAMPLE_LINES: [&str; 3] =
+        ["NVIDIA GeForce RTX 3080", "60 fps", "16.7 ms"];
+
     /// Regression for "HUD text vanishes after moving to another
     /// monitor": every panel anchor stays on the surface for a spread of
     /// DPI scales and window sizes. (The old math multiplied the
@@ -403,7 +414,7 @@ mod tests {
         for &(w, h) in &[(800, 600), (1600, 1200), (1280, 720), (300, 200)] {
             for scale in [0.75, 1.0, 1.25, 1.5, 2.0, 3.0] {
                 for hint_lines in [0usize, 1, 2, 3] {
-                    let anchors = hud_text_anchors(w, h, scale, FONT_PX, hint_lines);
+                    let anchors = hud_text_anchors(w, h, scale, FONT_PX, hint_lines, PERF_SAMPLE_LINES);
                     for (i, &(x, y)) in anchors.iter().enumerate() {
                         assert!(
                             x >= 0.0 && x < w as f32 && y >= 0.0 && y < h as f32,
@@ -439,13 +450,13 @@ mod tests {
     /// geometry: device line 46 px up, hints line 24 px up.
     #[test]
     fn anchors_match_tuned_defaults_at_scale_one() {
-        let a = hud_text_anchors(800, 600, 1.0, FONT_PX, 1);
+        let a = hud_text_anchors(800, 600, 1.0, FONT_PX, 1, PERF_SAMPLE_LINES);
         approx(a[0].0, 10.0, 1e-3);
         approx(a[2].0, 10.0, 1e-3);
         approx(a[2].1, 554.0, 1e-1); // device line
         approx(a[4].1, 576.0, 1e-1); // hints line
         approx(a[0].1, 52.0, 1e-4); // feature panel
-        approx(a[1].0, 630.0, 1e-4); // perf column
+        approx(a[1].0, 596.8, 1e-4); // perf column, right-justified: 800−10−23·0.6·14
         approx(a[3].0, 280.0, 1e-4); // overlay
     }
 
@@ -454,8 +465,8 @@ mod tests {
     /// bottom edge as scale grows, instead of shooting past it.
     #[test]
     fn anchors_track_scale_change_direction() {
-        let a1 = hud_text_anchors(800, 600, 1.0, FONT_PX, 1)[2].1;
-        let a2 = hud_text_anchors(800, 600, 2.0, FONT_PX, 1)[2].1;
+        let a1 = hud_text_anchors(800, 600, 1.0, FONT_PX, 1, PERF_SAMPLE_LINES)[2].1;
+        let a2 = hud_text_anchors(800, 600, 2.0, FONT_PX, 1, PERF_SAMPLE_LINES)[2].1;
         // 1×: 600−46 = 554; 2×: 600−92 = 508 — closer to the edge, on it.
         approx(a1, 554.0, 1e-1);
         approx(a2, 508.0, 1e-1);
@@ -475,7 +486,7 @@ mod tests {
         let expected = |h: f32, scale: f32| h - (BOTTOM_PAD + BOTTOM_LINE_GAP + line_h) * scale;
         for &(w, h) in &[(800u32, 600u32), (1600, 1200), (1280, 720), (300, 200)] {
             for scale in [1.0f32, 1.25, 1.5, 2.0] {
-                let a = hud_text_anchors(w, h, scale, FONT_PX, 0);
+                let a = hud_text_anchors(w, h, scale, FONT_PX, 0, PERF_SAMPLE_LINES);
                 let want = expected(h as f32, scale);
                 // The bottom margin must land above the clamp floor
                 // (HUD_MARGIN·scale) for these non-degenerate sizes, and
@@ -486,8 +497,8 @@ mod tests {
         }
         // Regression: hints shown (3 lines) stacks higher; hidden (0)
         // drops the device line strictly lower (closer to the bottom).
-        let shown = hud_text_anchors(800, 600, 1.0, FONT_PX, HINT_LINES)[2].1;
-        let hidden = hud_text_anchors(800, 600, 1.0, FONT_PX, 0)[2].1;
+        let shown = hud_text_anchors(800, 600, 1.0, FONT_PX, HINT_LINES, PERF_SAMPLE_LINES)[2].1;
+        let hidden = hud_text_anchors(800, 600, 1.0, FONT_PX, 0, PERF_SAMPLE_LINES)[2].1;
         assert!(hidden > shown, "hidden device line {} should sit lower (larger y) than with hints {}", hidden, shown);
     }
 
@@ -501,7 +512,7 @@ mod tests {
         for &w in &[640u32, 800, 1024, 1280, 1920] {
             for &h in &[480u32, 600, 720, 1080] {
                 for scale in [0.75f32, 1.0, 1.25, 1.5, 2.0] {
-                    let a = hud_text_anchors(w, h, scale, FONT_PX, HINT_LINES);
+                    let a = hud_text_anchors(w, h, scale, FONT_PX, HINT_LINES, PERF_SAMPLE_LINES);
                     assert_eq!(a[4].0, HUD_MARGIN * scale, "hints x at scale {scale}: {:?}", a[4]);
                     let want = h as f32 - (BOTTOM_PAD + HINT_LINES as f32 * line_h) * scale;
                     approx(a[4].1, want, 1e-2);
@@ -515,7 +526,7 @@ mod tests {
     #[test]
     fn all_five_anchors_on_surface_at_tuned_geometry() {
         let (w, h, scale) = (1920u32, 1080u32, 1.25f32);
-        let a = hud_text_anchors(w, h, scale, FONT_PX, HINT_LINES);
+        let a = hud_text_anchors(w, h, scale, FONT_PX, HINT_LINES, PERF_SAMPLE_LINES);
         for (i, &(x, y)) in a.iter().enumerate() {
             assert!(
                 x >= 0.0 && x <= w as f32 && y >= 0.0 && y <= h as f32,
@@ -539,19 +550,55 @@ mod tests {
 
     /// Right-justify the top-right perf column: the widest realistic
     /// line ("NVIDIA GeForce RTX 3080", 25 chars) must end exactly at
-    /// the right margin, across all tested sizes/scales.
+    /// the right margin, across all tested sizes/scales — asserted both
+    /// through the pure [`perf_panel_x`] and through the x the layout
+    /// authority (`hud_text_anchors[1].0`) actually hands `prepare`.
     #[test]
     fn perf_panel_right_justifies_longest_adapter_line() {
-        let lines = ["NVIDIA GeForce RTX 3080", "60 fps", "16.7 ms"];
         for &w in &[640u32, 800, 1024, 1280, 1920] {
             for scale in [0.75f32, 1.0, 1.25, 1.5, 2.0] {
-                let x = perf_panel_x(w, scale, FONT_PX, lines);
-                let right = x + (lines[0].chars().count() as f32)
+                let x = perf_panel_x(w, scale, FONT_PX, PERF_SAMPLE_LINES);
+                let right = x + (PERF_SAMPLE_LINES[0].chars().count() as f32)
                     * MONO_ADVANCE_EM * FONT_PX * scale;
                 assert!(right <= w as f32, "perf column clips: right {right} > width {w} @ scale {scale}");
                 assert!((right - (w as f32 - HUD_MARGIN * scale)).abs() < 1e-3,
                     "right edge must sit at the right margin: {right}");
                 assert!(x >= HUD_MARGIN * scale);
+                // The anchor prepare consumes must match the pure fn.
+                let a = hud_text_anchors(w, 600, scale, FONT_PX, 1, PERF_SAMPLE_LINES);
+                approx(a[1].0, x, 1e-3);
+                assert!(a[1].0 <= w as f32, "anchor right of surface at {w}×scale {scale}: {}", a[1].0);
+            }
+        }
+    }
+
+    /// The layout authority ([`hud_text_anchors`]) must agree with the
+    /// pure [`perf_panel_x`] it folds in — this is the value `prepare`
+    /// puts in the perf `TextArea.left`. A drift (e.g. a fixed-width
+    /// perf offset) would silently leave the panel short of the right
+    /// margin, exactly the "not right-justified" regression.
+    #[test]
+    fn perf_anchor_consistency_hud_text_anchors_matches_perf_panel_x() {
+        let adapters = [
+            "NVIDIA GeForce RTX 3080",
+            "llvmpipe (LLVM 17.0.6, 256 bits)",
+            "AMD Radeon RX 7800 XT",
+            "Vulkan",
+            "Apple M2 Max",
+        ];
+        for &(w, h) in &[(640u32, 480u32), (800, 600), (1280, 720), (1920, 1080)] {
+            for scale in [0.75f32, 1.0, 1.25, 1.5, 2.0] {
+                for adapter in adapters {
+                    let lines = [adapter, "60 fps", "16.7 ms"];
+                    let want = perf_panel_x(w, scale, FONT_PX, lines);
+                    for hint_lines in [0usize, 1, 3] {
+                        let a = hud_text_anchors(w, h, scale, FONT_PX, hint_lines, lines);
+                        approx(a[1].0, want, 1e-3);
+                        // Clamped or not, the anchor must stay on-surface.
+                        assert!(a[1].0 >= 0.0 && a[1].0 <= w as f32,
+                            "anchor off-surface at {w}×{h} scale {scale}, adapter {adapter:?}: {}", a[1].0);
+                    }
+                }
             }
         }
     }
