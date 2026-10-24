@@ -40,6 +40,7 @@ Mouse: left-drag orbit · shift-/middle-drag pan · wheel zoom.
 | `u` / `i` | slice z-spacing wider/narrower |
 | `j` / `k` | waterfall z-offset toward/away |
 | `PageUp` / `PageDown` | waterfall history layers (depth), 8…256 — also set at startup with `--depth <n>` (default 48) |
+| `o` / `n` | FFT size up/down one rung on the 512 → 1024 → 2048 → 4096 → 8192 ladder (default 2048, also set at startup with `--fft <size>`); the waterfall rebuilds instantly, feature smoothing restarts on the new bin geometry |
 | `c` / `v` | waterfall frequency-axis log factor ×1.15 / ×0.87 (`v` flattens toward linear) |
 | `-` / `=` | spectrum frequency axis ×0.99 / ×1.01 |
 | `_` / `+` | waveform vertical scale |
@@ -63,6 +64,14 @@ typical frame (max `|X| ≈ 0.3` → y ≈ 4.9) several times past the top of th
 0.35 maps the same content to y ≈ 1.7 — ≈ 0.86 of the front-slice frustum height at the
 default vantage. `-`/`=` zoom *relative* to it, and `a` (auto-scale) replaces it with a
 content-adaptive gain.
+
+**FFT size vs. resolution, honestly:** the analysis window is *fixed* at 1024 samples
+(≈ 21.3 ms @48 kHz) — that alone determines the true frequency resolution (≈ 47 Hz per
+independent bin, regardless of the FFT size). `o`/`n` change the zero-padded transform
+length: a larger FFT interpolates that same window into more bins (finer display
+granularity — narrower peaks on the axis, smoother rolloff readouts), while 512 analyzes
+only the newest 512 samples of each window (coarser but snappier readouts). Only the
+window length would change the real resolution.
 
 The HUD: left = L/R RMS meters with 800 ms peak-hold ticks + feature panel
 (spectral centroid in Hz, flux, RMS, 50%/80% rolloff); right = fps, frame ms,
@@ -127,14 +136,19 @@ off by default).
   sink's monitor ("what the host hears").
 - `--dump-pcm [seconds]` / `--dump-fft [seconds]`: stdout dumps of raw
   interleaved f32 PCM / verbose per-slice features (capture must be
-  available).
+  available). Both run the FFT pipeline at the `--fft` size.
 - `--print [seconds]`: sndpeek parity — one space-separated line per
   FFT slice: `centroid_hz flux rms ro50_hz ro80_hz` (plain floats;
   no MFCC). Shares the capture+FFT path with `--dump-fft`, which prints
   the more verbose debug format instead.
+- `--fft <size>`: FFT length (512…8192, power-of-two ladder, default
+  2048); the `o`/`n` keys adjust the same setting at runtime. The
+  analysis window is fixed at 1024 frames and zero-padded to the FFT
+  size (512 analyzes the newest 512 samples of the window instead).
 - The negotiated sample spec (rate/format/channels) is returned by the
   capture handshake and refused if not f32 stereo; the DSP window is 1024
-  frames (≈21.3 ms @48 kHz) zero-padded to a 2048-point FFT (1024 bins).
+  frames (≈21.3 ms @48 kHz) zero-padded to the FFT size (default 2048 →
+  1024 bins; runtime-adjustable 512…8192 via `--fft` / `o` / `n`).
 
 ## Architecture
 
