@@ -214,6 +214,13 @@ impl Renderer {
         self.latest.as_ref()
     }
 
+    /// Whether undrained DSP frames are waiting in the ring — the
+    /// low-latency half of the redraw pacing decision (see
+    /// `app::redraw_due`).
+    pub fn frames_pending(&self) -> bool {
+        frame_ring::has_pending(&self.frame_cons)
+    }
+
     /// Adapter name + backend, HUD diagnostics.
     pub fn adapter_name(&self) -> &str {
         &self.adapter_name
@@ -397,6 +404,12 @@ impl Renderer {
             self.hud_ui.render(&mut pass);
         }
         self.queue.submit([encoder.finish()]);
+        // Wayland: schedule the compositor frame callback *before* the
+        // buffer commit (`present`). This is what makes winit align
+        // `RedrawRequested` with the display's drawing loop — without it
+        // requested redraws are dispatched unpaced and the redraw loop
+        // hot-spins. No-op on X11/Windows/macOS.
+        self.window.pre_present_notify();
         self.queue.present(frame);
     }
 }

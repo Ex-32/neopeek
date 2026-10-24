@@ -31,6 +31,14 @@ pub fn frame_pair() -> (FrameProd, FrameCons) {
     HeapRb::<Frame>::new(FRAME_RING_FRAMES).split()
 }
 
+/// Whether the consumer has undrained DSP frames. Reads the live ring
+/// indices (not a cached count), so a freshly pushed frame is visible to
+/// the render-thread pacing decision in the same wake.
+pub fn has_pending(cons: &FrameCons) -> bool {
+    use ringbuf::traits::Observer as _;
+    !cons.is_empty()
+}
+
 /// Pops up to `max` frames oldest-first into `out` (which retains its
 /// capacity across calls). Returns the count drained.
 pub fn drain_into(cons: &mut FrameCons, out: &mut Vec<Frame>, max: usize) -> usize {
@@ -96,6 +104,18 @@ mod tests {
         assert_eq!(drain_into(&mut cons, &mut out, 1), 1);
         assert_eq!(out[0].seq, 0);
         assert!(prod.try_push(frame(u64::MAX)).is_ok());
+    }
+
+    #[test]
+    fn has_pending_tracks_undrained_frames() {
+        let (mut prod, cons) = frame_pair();
+        assert!(!has_pending(&cons), "fresh ring must look empty");
+        prod.try_push(frame(1)).unwrap();
+        assert!(has_pending(&cons));
+        let mut cons = cons;
+        let mut out = Vec::new();
+        assert_eq!(drain_into(&mut cons, &mut out, 1), 1);
+        assert!(!has_pending(&cons), "drained ring must look empty");
     }
 
     #[test]

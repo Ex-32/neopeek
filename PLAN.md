@@ -170,8 +170,16 @@ history texture (~200 KB); three small pipelines; no per-frame allocation.
 
 ### 2.4 Frame pacing & shutdown
 
-- Render loop: `winit` 0.30 `ApplicationHandler` + explicit `request_redraw()`
-  throttled to display refresh (Fifo/Adaptive present mode).
+- Render loop: `winit` 0.30 `ApplicationHandler`. The window maps immediately:
+  `resumed` presents once, synchronously (the first Wayland buffer commit is
+  what maps the surface — waiting for `RedrawRequested` would deadlock on a
+  frame callback that only a commit can produce). Thereafter `about_to_wait`
+  requests a redraw when DSP frames are pending or when a display-cadence
+  tick (~one frame period, from the monitor's refresh rate; 60 Hz fallback)
+  has elapsed since the last render, and otherwise parks the loop on
+  `ControlFlow::WaitUntil`. On Wayland, `Renderer::render` calls
+  `window.pre_present_notify()` before presenting so redraw dispatch aligns
+  with the compositor frame callback (real vsync pacing, no busy spin).
 - Clean shutdown: drop PA stream → close context → join threads; rings dropped;
   no cancellation flags beyond an `AtomicBool`.
 

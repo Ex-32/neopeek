@@ -3,12 +3,12 @@
 //! PLAN.md §4.3) and the audio pipeline (capture → DSP → frame ring).
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
@@ -21,6 +21,28 @@ use crate::input::{handle_camera_key, handle_key};
 
 use neopeek_dsp::WINDOW_FRAMES;
 use neopeek_theme::{cycler::Cycler, Theme};
+
+/// Fallback redraw tick: one redraw per ~display frame at 60 Hz. Used when
+/// the monitor's refresh rate is unknown. Pure pacing input, see
+/// [`redraw_due`].
+const DEFAULT_REDRAW_TICK: Duration = Duration::from_nanos(16_666_667);
+
+/// Redraw pacing decision for `about_to_wait` (PLAN.md §2.3: "No new frame →
+/// reuse last history (cheap), still render"): request a redraw immediately
+/// when fresh DSP frames are pending (low latency), and otherwise once per
+/// redraw tick since the last render — camera/theme/freeze changes stay live
+/// even with zero frames. Pure so the pacing can be unit-tested headlessly.
+pub(crate) fn redraw_due(
+    now: Instant,
+    last_render: Option<Instant>,
+    frames_pending: bool,
+    tick: Duration,
+) -> bool {
+    if frames_pending {
+        return true;
+    }
+    last_render.is_none_or(|t| now.duration_since(t) >= tick)
+}
 
 pub struct App {
     window: Option<Arc<Window>>,
@@ -131,9 +153,96 @@ impl App {
         self.settings.liss_scale = liss;
     }
 
+    /// Renders one frame: drains pending DSP frames into the history ring,
+    /// rebuilds the HUD state, draws the scene + HUD passes, and presents.
+    /// Called from `RedrawRequested` and once synchronously from `resumed`.
+    fn draw_frame(&mut self) {
+        // Copy the active theme out first (small; ~6 short strings, buys
+        // clean disjoint borrows below).
+        let theme = self.theme().clone();
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        // `--autospin`: continuous slow yaw (sndpeek's charm).
+        let now = Instant::now();
+        if self.autospin {
+            let dt = self
+                .last_frame
+                .map_or(0.0, |t| now.duration_since(t).as_secs_f32());
+            renderer.camera_mut().spin(dt);
+        }
+        // Frame-time stats for the HUD (EMA over redraws). Tracked at
+        // redraw time — not present time — so a failed surface texture
+        // still paces retry redraws through the redraw tick.
+        if let Some(t) = self.last_frame.replace(now) {
+            let ms = now.duration_since(t).as_secs_f32() * 1000.0;
+            self.frame_ms = if self.frame_ms == 0.0 {
+                ms
+            } else {
+                self.frame_ms * 0.9 + ms * 0.1
+            };
+            self.fps = 1000.0 / self.frame_ms.max(0.01);
+        }
+        // Assemble the HUD before render: the meter/peak-hold state
+        // machines live in the binary, the drained frames inside the
+        // renderer (copied out above). The closure captures only disjoint
+        // `App` fields.
+        let (adapter, rate, depth, latest) = (
+            renderer.adapter_name().to_owned(),
+            renderer.rate(),
+            renderer.history_depth(),
+            renderer.latest_frame().copied(),
+        );
+        let mut meter = self.meter;
+        let mut smooth = self.smooth;
+        let peak_hold_ms = theme.meters.peak_hold_ms;
+        let hud = self.settings.hud_on.then(|| {
+            let (source_name, backend) = match self.audio.as_ref() {
+                Some(audio) if audio.capture_lost() => ("(capture lost)", "pulse"),
+                Some(audio) => (audio.source_name(), "pulse"),
+                None => ("(no capture)", "none"),
+            };
+            HudData::assemble(
+                HudSources {
+                    source_name,
+                    backend,
+                    adapter: &adapter,
+                    rate,
+                    window_frames: WINDOW_FRAMES as u32,
+                    depth,
+                    fps: self.fps,
+                    frame_ms: self.frame_ms,
+                    peak_hold_ms,
+                    settings: &self.settings,
+                    latest: latest.as_ref(),
+                },
+                &mut meter,
+                &mut smooth,
+            )
+        });
+        self.meter = meter;
+        self.smooth = smooth;
+        let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
+        renderer.render(&self.settings, hud.as_ref(), scale, &theme);
+    }
+
     fn request_redraw(&self) {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
+        }
+    }
+
+    /// Redraw tick: one redraw per display frame. Uses the current
+    /// monitor's refresh rate when reported, falling back to 60 Hz.
+    fn redraw_tick(&self) -> Duration {
+        let mhz = self
+            .window
+            .as_ref()
+            .and_then(|w| w.current_monitor())
+            .and_then(|m| m.refresh_rate_millihertz());
+        match mhz {
+            Some(mhz) if mhz > 0 => Duration::from_nanos(1_000_000_000_000 / u64::from(mhz)),
+            _ => DEFAULT_REDRAW_TICK,
         }
     }
 }
@@ -173,7 +282,15 @@ impl ApplicationHandler for App {
                 }
                 self.window = Some(window);
                 self.renderer = Some(renderer);
-                self.request_redraw();
+                // Present once, synchronously: the first buffer commit is
+                // what maps the window on Wayland. Relying on
+                // `RedrawRequested` here would be a trap — winit dispatches
+                // it only once a compositor frame callback is available,
+                // and that callback is scheduled by the present itself
+                // (`pre_present_notify`) — a never-mapped surface would
+                // wait for a callback that never fires. Observed on the
+                // host as "wgpu surface initialized" but no window.
+                self.draw_frame();
             }
             Err(err) => {
                 tracing::error!("failed to initialize renderer: {err:#}");
@@ -188,70 +305,9 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::RedrawRequested => {
-                // Copy the active theme out first (small; ~6 short
-                // strings, buys clean disjoint borrows below).
-                let theme = self.theme().clone();
-                if let Some(renderer) = self.renderer.as_mut() {
-                    // `--autospin`: continuous slow yaw (sndpeek's charm).
-                    let now = Instant::now();
-                    if self.autospin {
-                        let dt = self
-                            .last_frame
-                            .map_or(0.0, |t| now.duration_since(t).as_secs_f32());
-                        renderer.camera_mut().spin(dt);
-                    }
-                    // Frame-time stats for the HUD (EMA over redraws).
-                    if let Some(t) = self.last_frame.replace(now) {
-                        let ms = now.duration_since(t).as_secs_f32() * 1000.0;
-                        self.frame_ms = if self.frame_ms == 0.0 {
-                            ms
-                        } else {
-                            self.frame_ms * 0.9 + ms * 0.1
-                        };
-                        self.fps = 1000.0 / self.frame_ms.max(0.01);
-                    }
-                    // Assemble the HUD before render: the meter/peak-hold
-                    // state machines live in the binary, the drained
-                    // frames inside the renderer (copied out above). The
-                    // closure captures only disjoint `App` fields.
-                    let (adapter, rate, depth, latest) = (
-                        renderer.adapter_name().to_owned(),
-                        renderer.rate(),
-                        renderer.history_depth(),
-                        renderer.latest_frame().copied(),
-                    );
-                    let mut meter = self.meter;
-                    let mut smooth = self.smooth;
-                    let peak_hold_ms = theme.meters.peak_hold_ms;
-                    let hud = self.settings.hud_on.then(|| {
-                        let (source_name, backend) = match self.audio.as_ref() {
-                            Some(audio) if audio.capture_lost() => ("(capture lost)", "pulse"),
-                            Some(audio) => (audio.source_name(), "pulse"),
-                            None => ("(no capture)", "none"),
-                        };
-                        HudData::assemble(
-                            HudSources {
-                                source_name,
-                                backend,
-                                adapter: &adapter,
-                                rate,
-                                window_frames: WINDOW_FRAMES as u32,
-                                depth,
-                                fps: self.fps,
-                                frame_ms: self.frame_ms,
-                                peak_hold_ms,
-                                settings: &self.settings,
-                                latest: latest.as_ref(),
-                            },
-                            &mut meter,
-                            &mut smooth,
-                        )
-                    });
-                    self.meter = meter;
-                    self.smooth = smooth;
-                    let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-                    renderer.render(&self.settings, hud.as_ref(), scale, &theme);
-                }
+                // Render exactly once per event; the pacing decision that
+                // schedules the next redraw lives in `about_to_wait`.
+                self.draw_frame();
             }
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -344,7 +400,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // `--watch-theme`: swap in the latest re-parsed theme file.
         if let (Some(path), Some(w)) = (self.watch_path.as_deref(), &self.watch) {
             if let Some(theme) = w.try_latest() {
@@ -356,7 +412,37 @@ impl ApplicationHandler for App {
                 }
             }
         }
-        self.request_redraw();
+
+        // Redraw pacing (PLAN.md §2.3/§4.2): the app renders continuously
+        // at display cadence — with zero pending frames we still redraw so
+        // camera/theme/freeze changes stay live — but never busy-spins:
+        // a redraw is requested only when fresh DSP frames are pending
+        // (low latency) or when the redraw tick has come due since the
+        // last render. Between wakes the loop sleeps on the tick deadline
+        // (`WaitUntil`) or on events. On Wayland the actual dispatch of
+        // the requested redraw is additionally aligned with the
+        // compositor frame callback (`Renderer::render` calls
+        // `window.pre_present_notify()`), so the tick is a fallback for
+        // platforms without frame callbacks (X11) and for missed ones.
+        let now = Instant::now();
+        let frames_pending = self
+            .renderer
+            .as_ref()
+            .is_some_and(|r| r.frames_pending());
+        let tick = self.redraw_tick();
+        if redraw_due(now, self.last_frame, frames_pending, tick) {
+            self.request_redraw();
+        }
+        // Sleep until the next tick; if a redraw is already scheduled (or
+        // a frame callback is in flight) the loop wakes earlier anyway.
+        // Anchoring to the last render instead of `now` avoids drift; if
+        // the deadline already passed we re-arm from `now` so a stalled
+        // present can't turn this into a hot no-op loop.
+        let deadline = match self.last_frame {
+            Some(t) if t + tick > now => t + tick,
+            _ => now + tick,
+        };
+        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 }
 
@@ -365,4 +451,55 @@ fn renderer_camera(app: &mut App) -> &mut neopeek_render::camera::Camera {
         .as_mut()
         .expect("keyboard event before renderer init should not happen")
         .camera_mut()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fresh DSP frames always redraw immediately, even right after a
+    /// render (drain-then-render keeps the waterfall at slice latency).
+    #[test]
+    fn pending_frames_redraw_immediately() {
+        let now = Instant::now();
+        assert!(redraw_due(now, Some(now), true, DEFAULT_REDRAW_TICK));
+    }
+
+    /// Before the first render (or after a `resumed` that skipped it) we
+    /// always redraw — the window must map on the first wake.
+    #[test]
+    fn no_last_render_redraws() {
+        let now = Instant::now();
+        assert!(redraw_due(now, None, false, DEFAULT_REDRAW_TICK));
+    }
+
+    /// Within the tick and with no pending frames: no redraw, the loop
+    /// sleeps on the deadline instead (no busy spin).
+    #[test]
+    fn within_tick_is_quiet() {
+        let now = Instant::now();
+        let just_rendered = now.checked_sub(Duration::from_millis(5)).unwrap();
+        assert!(!redraw_due(now, Some(just_rendered), false, DEFAULT_REDRAW_TICK));
+    }
+
+    /// At/after the tick: redraw due — keeps theme/camera changes live
+    /// with zero frames (PLAN.md §2.3).
+    #[test]
+    fn tick_elapsed_redraws() {
+        let now = Instant::now();
+        let tick_ago = now.checked_sub(DEFAULT_REDRAW_TICK).unwrap();
+        assert!(redraw_due(now, Some(tick_ago), false, DEFAULT_REDRAW_TICK));
+        let over_tick = now.checked_sub(DEFAULT_REDRAW_TICK * 2).unwrap();
+        assert!(redraw_due(now, Some(over_tick), false, DEFAULT_REDRAW_TICK));
+    }
+
+    /// A finer tick (high-refresh monitor) redraws sooner than the 60 Hz
+    /// fallback would.
+    #[test]
+    fn tick_length_is_respected() {
+        let now = Instant::now();
+        let a_while_ago = now.checked_sub(Duration::from_millis(10)).unwrap();
+        assert!(!redraw_due(now, Some(a_while_ago), false, DEFAULT_REDRAW_TICK));
+        assert!(redraw_due(now, Some(a_while_ago), false, Duration::from_millis(9)));
+    }
 }
