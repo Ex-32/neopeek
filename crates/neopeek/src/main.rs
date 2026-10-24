@@ -9,6 +9,7 @@ mod app;
 mod cli_actions;
 mod dsp;
 mod input;
+mod stats;
 
 use neopeek_config::{Cli, Parser as _};
 use tracing_subscriber::EnvFilter;
@@ -25,6 +26,13 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+
+    // Opt-in memory diagnostics (`--stats-interval N`, 0 = off): the
+    // user runs this on a real host to verify the RAM fixes land.
+    let stats_interval = cli.stats_interval_secs();
+    if stats_interval > 0 {
+        stats::spawn(stats_interval);
     }
 
     let event_loop = match winit::event_loop::EventLoop::new() {

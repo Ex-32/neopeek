@@ -73,6 +73,15 @@ pub struct Cli {
     /// Re-parse --theme's file on every change (dev aid). Off by default.
     #[arg(long, help = "hot-reload the loaded theme file")]
     pub watch_theme: bool,
+
+    /// Memory diagnostics: log resident set size (`rss_kb`) every N
+    /// seconds (0 = off). Off by default.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        help = "log resident memory (KB) every N seconds; 0 = off"
+    )]
+    pub stats_interval: Option<u64>,
 }
 
 impl Cli {
@@ -102,6 +111,11 @@ impl Cli {
     /// Seconds to feed the pipeline when `--print` is set (default 2).
     pub fn print_seconds(&self) -> f64 {
         self.print.unwrap_or(2.0)
+    }
+
+    /// RSS-log cadence in seconds; 0 = off (default).
+    pub fn stats_interval_secs(&self) -> u64 {
+        self.stats_interval.unwrap_or(0)
     }
 }
 
@@ -140,6 +154,24 @@ mod tests {
 
         assert!(Cli::try_parse_from(["neopeek", "--depth"]).is_err());
         assert!(Cli::try_parse_from(["neopeek", "--depth", "x"]).is_err());
+    }
+
+    /// `--stats-interval`: default off (0), N seconds parsed, 0 stays 0.
+    #[test]
+    fn cli_parses_stats_interval() {
+        let off = Cli::try_parse_from(["neopeek"]).unwrap();
+        assert_eq!(off.stats_interval_secs(), 0);
+
+        let on = Cli::try_parse_from(["neopeek", "--stats-interval", "5"]).unwrap();
+        assert_eq!(on.stats_interval, Some(5));
+        assert_eq!(on.stats_interval_secs(), 5);
+        assert!(!on.has_cli_action(), "diagnostics flag is not an action");
+
+        let zero = Cli::try_parse_from(["neopeek", "--stats-interval", "0"]).unwrap();
+        assert_eq!(zero.stats_interval_secs(), 0, "0 = off");
+
+        assert!(Cli::try_parse_from(["neopeek", "--stats-interval"]).is_err());
+        assert!(Cli::try_parse_from(["neopeek", "--stats-interval", "-1"]).is_err());
     }
 
     #[test]
