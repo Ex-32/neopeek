@@ -8,7 +8,7 @@ use glyphon::cosmic_text::{Family, Shaping};
 use glyphon::cosmic_text as cosmic_text;
 use glyphon::{Resolution, TextArea, TextBounds, TextRenderer, Viewport};
 
-use crate::hud::{BAR_GAP, HUD_MARGIN, HudData};
+use crate::hud::HudData;
 use neopeek_theme::Theme;
 
 /// Embedded OFL monospace font (single weight); cosmic-text's system
@@ -219,8 +219,8 @@ impl HudQuads {
     }
 }
 
-/// One laid-out text panel: buffer, pixel position, rgb color.
-type Area<'a> = (&'a cosmic_text::Buffer, f32, f32, (u8, u8, u8));
+/// One laid-out text panel: buffer, physical-pixel (left, top) anchor, rgb color.
+type Area<'a> = (&'a cosmic_text::Buffer, (f32, f32), (u8, u8, u8));
 
 /// Persistent glyphon state for the HUD text.
 pub struct HudUI {
@@ -306,31 +306,43 @@ impl HudUI {
         }
         self.viewport.update(queue, Resolution { width, height });
 
-        // Layout (physical pixels, DPI-scaled): feature panel below the
-        // meter quads, perf top-right, device stats bottom, keybind line
-        // dim under it, overlay centered.
-        let feature_top = HUD_MARGIN + 2.0 * BAR_GAP + 6.0;
+        // Layout in physical pixels via the pure `hud_text_anchors`
+        // (see hud.rs): feature panel below the meter quads, perf
+        // top-right, device stats bottom, keybind hints dim under it
+        // (omitted when hidden), overlay centered. `TextArea.left/top`
+        // are physical; glyphon scales the buffer's logical glyph
+        // coordinates itself.
+        let anchors = crate::hud::hud_text_anchors(width, height, scale, self.font_px, 1);
         let hint_color = Theme::rgb8(&theme.hud.dim);
-        let hint_y = if hud.show_hints { height as f32 - 24.0 } else { -1e5 };
-        let ours: [Area; 5] = [
-            (&self.buffers[0], HUD_MARGIN, feature_top, text),
-            (&self.buffers[1], width as f32 - 170.0, HUD_MARGIN, text),
-            (&self.buffers[2], HUD_MARGIN, height as f32 - 46.0, text),
-            (&self.buffers[3], width as f32 / 2.0 - 120.0, height as f32 / 2.0 - 30.0, accent),
-            (&self.buffers[4], HUD_MARGIN, hint_y, hint_color),
+        let ours: [Area; 4] = [
+            (&self.buffers[0], anchors[0], text),
+            (&self.buffers[1], anchors[1], text),
+            (&self.buffers[2], anchors[2], text),
+            (&self.buffers[3], anchors[3], accent),
         ];
-        let areas: Vec<TextArea> = ours
+        let mut areas: Vec<TextArea> = ours
             .iter()
-            .map(|(buf, left, top, color)| TextArea {
+            .map(|(buf, (left, top), color)| TextArea {
                 buffer: buf,
-                left: left * scale,
-                top: top * scale,
+                left: *left,
+                top: *top,
                 scale,
                 bounds: TextBounds::default(),
                 default_color: cosmic_text::Color::rgb(color.0, color.1, color.2),
                 custom_glyphs: &[],
             })
             .collect();
+        if hud.show_hints {
+            areas.push(TextArea {
+                buffer: &self.buffers[4],
+                left: anchors[4].0,
+                top: anchors[4].1,
+                scale,
+                bounds: TextBounds::default(),
+                default_color: cosmic_text::Color::rgb(hint_color.0, hint_color.1, hint_color.2),
+                custom_glyphs: &[],
+            });
+        }
         // Depth per glyph (metadata): 0.5 keeps text above the scene in the
         // screen-space pass (no depth state on this pipeline — unused).
         let _ = self.renderer.prepare(

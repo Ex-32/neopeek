@@ -161,6 +161,66 @@ pub fn center_overlay(frozen: bool, muted: bool) -> Vec<String> {
     lines
 }
 
+/// Text-panel layout offsets, logical pixels (scaled per panel below).
+/// 170 ≈ the widest perf-column line at the default 14 px font;
+/// 120/30 center the overlay; bottom offsets derive from the line
+/// height (`font_px · 1.43`, see [`hud_text_anchors`]).
+const PERF_COL_W: f32 = 170.0;
+const OVERLAY_HALF_W: f32 = 120.0;
+const OVERLAY_TOP: f32 = 30.0;
+const BOTTOM_PAD: f32 = 4.0;
+/// Gap between the device line and the hints line(s).
+const BOTTOM_LINE_GAP: f32 = 2.0;
+
+/// Top-left anchor positions of the five HUD text panels, in **physical**
+/// pixels, computed from the current surface size, DPI scale and font
+/// metrics. Order: `[0]` feature panel, `[1]` perf column (top-right),
+/// `[2]` device stats (bottom), `[3]` overlay (center), `[4]` keybind
+/// hints (bottom).
+///
+/// All offsets are logical pixels and are multiplied by `scale` here;
+/// the surface `width`/`height` are already physical, so they combine
+/// with the *scaled* offsets — never the other way around. (The previous
+/// inline math did `(height - 46) * scale`, double-scaling the physical
+/// height: on a scale ≠ 1 monitor every width/height-anchored panel slid
+/// off the surface — bottom line, top-right column, hints — while the
+/// fixed-offset feature panel stayed visible. That is the reported
+/// "HUD text vanishes after moving to another monitor".)
+///
+/// Glyphon contract (0.12): `TextArea.left/top` are physical pixel
+/// positions and the buffer's logical glyph coordinates are multiplied
+/// by `TextArea.scale` (`cosmic_text::LayoutGlyph::physical`), so an
+/// anchor is `physical_dim − logical_offset · scale`.
+pub fn hud_text_anchors(
+    width: u32,
+    height: u32,
+    scale: f32,
+    font_px: f32,
+    hint_lines: usize,
+) -> [(f32, f32); 5] {
+    let (w, h) = (width as f32, height as f32);
+    // Line height matches the buffers' `Metrics` (hud_render).
+    let line_h = (font_px * 1.43).max(1.0);
+    // Bottom stack: hints line(s) closest to the edge, the device line
+    // above them. `hint_lines = 1` reproduces the old offsets (46/24).
+    let hints_h = hint_lines as f32 * line_h;
+    let device_top = h - (BOTTOM_PAD + hints_h + BOTTOM_LINE_GAP + line_h) * scale;
+    let hints_top = h - (BOTTOM_PAD + hints_h) * scale;
+    let feature_top = HUD_MARGIN + 2.0 * BAR_GAP + 6.0;
+    [
+        (HUD_MARGIN * scale, feature_top * scale),
+        // Tiny windows × large scales can push the right-anchored column
+        // past the left edge; clamp so the text stays visible.
+        ((w - PERF_COL_W * scale).max(HUD_MARGIN * scale), HUD_MARGIN * scale),
+        (HUD_MARGIN * scale, device_top),
+        (
+            (w / 2.0 - OVERLAY_HALF_W * scale).max(0.0),
+            (h / 2.0 - OVERLAY_TOP * scale).max(0.0),
+        ),
+        (HUD_MARGIN * scale, hints_top),
+    ]
+}
+
 /// One laid-out meter rect, physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeterRect {
@@ -287,6 +347,59 @@ impl HudData {
 mod tests {
     use super::*;
     use crate::views::ViewSettings;
+
+    /// Default HUD font (Ember metrics; hud_render starts at this too).
+    const FONT_PX: f32 = 14.0;
+
+    /// Regression for "HUD text vanishes after moving to another
+    /// monitor": every panel anchor stays on the surface for a spread of
+    /// DPI scales and window sizes. (The old math multiplied the
+    /// already-physical `height`/`width` by `scale` again, pushing the
+    /// device line at (height−46)·scale and the perf column at
+    /// (width−170)·scale off the surface whenever scale ≠ 1.)
+    #[test]
+    fn anchors_stay_on_surface_across_scales_and_sizes() {
+        for &(w, h) in &[(800, 600), (1600, 1200), (1280, 720), (300, 200)] {
+            for scale in [0.75, 1.0, 1.25, 1.5, 2.0, 3.0] {
+                for hint_lines in [0usize, 1, 2] {
+                    let anchors = hud_text_anchors(w, h, scale, FONT_PX, hint_lines);
+                    for (i, &(x, y)) in anchors.iter().enumerate() {
+                        assert!(
+                            x >= 0.0 && x < w as f32 && y >= 0.0 && y < h as f32,
+                            "panel {i} anchor ({x}, {y}) off-surface at {w}×{h}, scale {scale}, hint_lines {hint_lines}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bottom panel x/y contract at scale 1 reproduces the tuned
+    /// geometry: device line 46 px up, hints line 24 px up.
+    #[test]
+    fn anchors_match_tuned_defaults_at_scale_one() {
+        let a = hud_text_anchors(800, 600, 1.0, FONT_PX, 1);
+        approx(a[2].0, 10.0, 1e-3);
+        approx(a[2].1, 554.0, 1e-1); // device line
+        approx(a[4].1, 576.0, 1e-1); // hints line
+        approx(a[0].1, 52.0, 1e-4); // feature panel
+        approx(a[1].0, 630.0, 1e-4); // perf column
+        approx(a[3].0, 280.0, 1e-4); // overlay
+    }
+
+    /// Scale change (the monitor-move event): positions track the new
+    /// scale in the correct direction — the device line stays near the
+    /// bottom edge as scale grows, instead of shooting past it.
+    #[test]
+    fn anchors_track_scale_change_direction() {
+        let a1 = hud_text_anchors(800, 600, 1.0, FONT_PX, 1)[2].1;
+        let a2 = hud_text_anchors(800, 600, 2.0, FONT_PX, 1)[2].1;
+        // 1×: 600−46 = 554; 2×: 600−92 = 508 — closer to the edge, on it.
+        approx(a1, 554.0, 1e-1);
+        approx(a2, 508.0, 1e-1);
+        assert!(a2 < a1 && a2 > 0.0);
+        // The buggy formula gave (600−46)·2 = 1108 ≥ height 600.
+    }
 
     #[test]
     fn db_math() {
