@@ -74,6 +74,19 @@ pub struct Cli {
     #[arg(long, help = "hot-reload the loaded theme file")]
     pub watch_theme: bool,
 
+    /// Idle pause: after SECONDS with no audible audio (drained frames
+    /// whose max bin magnitude is exactly 0.0 count as idle, so
+    /// silently-flowing monitor streams pause too) the renderer stops
+    /// redrawing and polls once per second for resumption. Input and
+    /// audio resume it. 0 = keep rendering unconditionally.
+    #[arg(
+        long = "idle-pause",
+        value_name = "SECONDS",
+        default_value = "5",
+        help = "pause rendering after SECONDS of audio silence; 0 = disabled"
+    )]
+    pub idle_pause: u64,
+
     /// Memory diagnostics: log resident set size (`rss_kb`) every N
     /// seconds (0 = off). Off by default.
     #[arg(
@@ -208,6 +221,24 @@ mod tests {
         assert!(zero.has_cli_action());
     }
 
+    /// `--idle-pause`: default 5 s, 0 = disabled, whole seconds parsed.
+    #[test]
+    fn cli_parses_idle_pause() {
+        let default = Cli::try_parse_from(["neopeek"]).unwrap();
+        assert_eq!(default.idle_pause, 5, "default: pause after 5 s of silence");
+        assert!(!default.has_cli_action(), "display flag is not an action");
+
+        let three = Cli::try_parse_from(["neopeek", "--idle-pause", "3"]).unwrap();
+        assert_eq!(three.idle_pause, 3);
+
+        let off = Cli::try_parse_from(["neopeek", "--idle-pause", "0"]).unwrap();
+        assert_eq!(off.idle_pause, 0, "0 = disabled");
+
+        assert!(Cli::try_parse_from(["neopeek", "--idle-pause"]).is_err());
+        assert!(Cli::try_parse_from(["neopeek", "--idle-pause", "-1"]).is_err());
+        assert!(Cli::try_parse_from(["neopeek", "--idle-pause", "x"]).is_err());
+    }
+
     #[test]
     fn cli_help_renders() {
         let mut cmd = Cli::command();
@@ -215,5 +246,6 @@ mod tests {
         assert!(help.contains("--list-devices"));
         assert!(help.contains("--device"));
         assert!(help.contains("--dump-pcm"));
+        assert!(help.contains("--idle-pause"));
     }
 }

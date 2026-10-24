@@ -16,6 +16,7 @@ pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
          depth: {} layers (history slices)\n\
          freq_scale: {:.3}, wave_scale: {:.3}, liss_scale: {:.3}\n\
          strip_width: {:.4}, liss_delay: {}\n\
+         idle_pause: {:?} (0 = off)\n\
          hud: {}, keybinds: {}\n\
          camera.target = ({:.3}, {:.3}, {:.3})\n\
          camera.azimuth = {:.3} rad, elevation = {:.3} rad, distance = {:.3}\n\
@@ -38,6 +39,7 @@ pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
         settings.liss_scale,
         settings.strip_width,
         settings.liss_delay,
+        settings.idle_pause,
         flag(settings.hud_on),
         flag(settings.show_hints),
         camera.target[0],
@@ -74,6 +76,7 @@ mod tests {
             "liss_scale: 0.450",
             "strip_width: 0.0040",
             "liss_delay: 512",
+            "idle_pause: 5s",
             "hud: on",
             "camera.azimuth",
             "distance = 3.500",

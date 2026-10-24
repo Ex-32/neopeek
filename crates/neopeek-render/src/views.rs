@@ -5,6 +5,8 @@
 //! caller-provided buffer that the renderer reuses across frames (no
 //! per-frame allocation on the hot path).
 
+use std::time::Duration;
+
 use neopeek_dsp::{Frame, WINDOW_FRAMES};
 use crate::grid::{DEFAULT_DEPTH, MAX_DEPTH, MIN_DEPTH};
 
@@ -76,6 +78,14 @@ pub struct ViewSettings {
     /// `y`: pseudo-Lissajous delay in samples (mono-ish sources only);
     /// cycles 512 → 256 → 128 → 64 → 512. `Y` stays the snap-side view.
     pub liss_delay: usize,
+    /// Idle pause: the renderer stops redrawing once nothing has been
+    /// audible for this long (silent monitor-stream frames count as
+    /// idle; input and resumed audio wake it). CLI-only knob
+    /// (`--idle-pause <SECONDS>`, no runtime key); 0 = disabled. Default
+    /// [`crate::idle::DEFAULT_IDLE_PAUSE_SECS`]. Owned here so the `p`
+    /// dump reports the live value. Consumed by the binary's
+    /// `IdleGate` wiring (see `crate::idle`).
+    pub idle_pause: Duration,
 }
 
 impl Default for ViewSettings {
@@ -101,6 +111,7 @@ impl Default for ViewSettings {
             liss_scale: LISS_SCALE,
             strip_width: 0.004,
             liss_delay: LISS_DELAY,
+            idle_pause: Duration::from_secs(crate::idle::DEFAULT_IDLE_PAUSE_SECS),
         }
     }
 }
