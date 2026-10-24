@@ -989,11 +989,10 @@ dependencies = [
  "neopeek-audio",
  "neopeek-config",
  "neopeek-dsp",
- "pollster",
+ "neopeek-render",
  "ringbuf",
  "tracing",
  "tracing-subscriber",
- "wgpu",
  "winit",
 ]
 
@@ -1025,6 +1024,15 @@ dependencies = [
 [[package]]
 name = "neopeek-render"
 version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "neopeek-dsp",
+ "pollster",
+ "ringbuf",
+ "tracing",
+ "wgpu",
+ "winit",
+]
 
 [[package]]
 name = "neopeek-theme"

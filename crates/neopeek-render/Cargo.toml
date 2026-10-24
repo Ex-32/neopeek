@@ -7,3 +7,10 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+neopeek-dsp.workspace = true
+bytemuck.workspace = true
+ringbuf.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+pollster.workspace = true
+tracing.workspace = true

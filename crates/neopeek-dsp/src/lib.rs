@@ -35,6 +35,15 @@ pub struct Frame {
     pub bins: [f32; BINS],
     /// Last window of mono (averaged) samples, for waveform/Lissajous.
     pub mono: [f32; WINDOW_FRAMES],
+    /// Last window of the left channel (true Lissajous).
+    pub left: [f32; WINDOW_FRAMES],
+    /// Last window of the right channel (true Lissajous).
+    pub right: [f32; WINDOW_FRAMES],
+    /// `true` when L and R were near-identical this window (a mono-ish
+    /// source, e.g. a mono monitor): the Lissajous figure must then be
+    /// drawn as the pseudo-Lissajous (mono vs its 512-sample delayed copy)
+    /// because L̄ vs R̄ degenerates into a straight diagonal line.
+    pub mono_like: bool,
     /// Per-channel window RMS (linear amplitude).
     pub rms: [f32; CHANNELS],
     /// Per-channel window peak (linear amplitude).
@@ -46,6 +55,28 @@ pub struct Frame {
     /// Lowest bin where cumulative magnitude crosses 50% / 80% of total.
     pub rolloff50: f32,
     pub rolloff80: f32,
+}
+
+/// Zeroed window (all-silent frame); manual because `Default` is not
+/// implemented in core for large arrays.
+impl Default for Frame {
+    /// Zeroed, all-silent frame (`mono_like = true` — no stereo evidence).
+    fn default() -> Self {
+        Self {
+            seq: 0,
+            bins: [0.0; BINS],
+            mono: [0.0; WINDOW_FRAMES],
+            left: [0.0; WINDOW_FRAMES],
+            right: [0.0; WINDOW_FRAMES],
+            mono_like: true,
+            rms: [0.0; CHANNELS],
+            peak: [0.0; CHANNELS],
+            centroid: 0.0,
+            flux: 0.0,
+            rolloff50: 0.0,
+            rolloff80: 0.0,
+        }
+    }
 }
 
 /// Hanning window, `w[n] = 0.5 * (1 - cos(2π n / N))` (periodic variant).
@@ -171,6 +202,10 @@ pub struct Engine {
     /// Fixed-size mono downmix; converted to `[f32; WINDOW_FRAMES]` copies
     /// into `Frame` with no heap traffic on the ~21 ms hot path.
     mono: [f32; WINDOW_FRAMES],
+    left: [f32; WINDOW_FRAMES],
+    right: [f32; WINDOW_FRAMES],
+    max_l_r_diff: f32,
+    max_l_r_abs: f32,
     prev_bins: [f32; BINS],
     seq: u64,
     smooth_centroid: MovingAverage,
@@ -196,6 +231,10 @@ impl Engine {
             scratch,
             input: vec![Complex::new(0.0, 0.0); FFT_SIZE],
             mono: [0.0; WINDOW_FRAMES],
+            left: [0.0; WINDOW_FRAMES],
+            right: [0.0; WINDOW_FRAMES],
+            max_l_r_diff: 0.0,
+            max_l_r_abs: 0.0,
             prev_bins: [0.0; BINS],
             seq: 0,
             smooth_centroid: MovingAverage::default(),
@@ -216,6 +255,19 @@ impl Engine {
             let l = interleaved[k * CHANNELS];
             let r = interleaved[k * CHANNELS + 1];
             self.mono[k] = (l + r) * 0.5;
+            self.left[k] = l;
+            self.right[k] = r;
+            // Cheap mono-ness detector: tracks how much more the two
+            // channels differ than either ends up being. l/R identical
+            // (mono monitor) → 0 relative difference.
+            let diff = (l - r).abs();
+            if diff > self.max_l_r_diff {
+                self.max_l_r_diff = diff;
+            }
+            let abs = l.abs().max(r.abs());
+            if abs > self.max_l_r_abs {
+                self.max_l_r_abs = abs;
+            }
         }
         let (rms, peak) = channel_levels(interleaved);
 
@@ -242,6 +294,9 @@ impl Engine {
             seq: self.seq,
             bins: mags,
             mono: self.mono,
+            left: self.left,
+            right: self.right,
+            mono_like: self.max_l_r_diff <= (self.max_l_r_abs * 1e-3).max(1e-6),
             rms,
             peak,
             centroid: self.smooth_centroid.push(c),
@@ -391,5 +446,42 @@ mod tests {
             .process_window(&sine_interleaved(f, WINDOW_FRAMES))
             .unwrap();
         assert_eq!(engine.sequence(), 2);
+    }
+
+    #[test]
+    fn frame_is_fixed_size_pod() {
+        // Must stay a plain Copy POD to live in the lock-free ring.
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<Frame>();
+        // 4×1024-sample f32 arrays (bins, mono, left, right) + u64 seq +
+        // 2×2 channel f32 (rms, peak) + 5 scalar f32 (centroid, flux,
+        // rolloff50/80, mono_like-as-u32).
+        let expected = std::mem::size_of::<u64>()
+            + 4 * WINDOW_FRAMES * std::mem::size_of::<f32>()
+            + 4 * std::mem::size_of::<f32>()
+            + 5 * std::mem::size_of::<f32>();
+        let aligned = expected.div_ceil(8) * 8; // u64 alignment of field 1
+        assert_eq!(std::mem::size_of::<Frame>(), aligned.max(8));
+    }
+
+    #[test]
+    fn engine_keeps_l_and_r_and_flags_mono_like() {
+        let mut engine = Engine::new();
+        // Identical channels (mono monitor style) → mono_like.
+        let mono = sine_interleaved(220.0, WINDOW_FRAMES);
+        let frame = engine.process_window(&mono).unwrap();
+        assert!(frame.mono_like, "identical channels must be mono-like");
+        assert_eq!(frame.left[13], frame.right[13]);
+
+        // Hard-panned stereo: L only → not mono_like, L preserved, R silent.
+        let mut inter = vec![0.0f32; WINDOW_FRAMES * CHANNELS];
+        for k in 0..WINDOW_FRAMES {
+            inter[k * CHANNELS] = 0.5;
+        }
+        let frame = engine.process_window(&inter).unwrap();
+        assert!(!frame.mono_like, "L≠R must not be mono-like");
+        assert_eq!(frame.left[100], 0.5);
+        assert_eq!(frame.right[100], 0.0);
+        assert_eq!(frame.mono[100], 0.25);
     }
 }

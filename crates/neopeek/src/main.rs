@@ -1,11 +1,14 @@
 //! neopeek — modern sndpeek-style audio visualizer (binary crate).
 //!
-//! M2 scope: CLI actions (list devices / dump PCM) + the M1 window shell.
-//! Waterfall, HUD, and sustained capture land in later milestones.
+//! M4 scope: live window with the waterfall/waveform/Lissajous pipeline
+//! fed by capture + DSP threads. The winit/wgpu shell itself now lives in
+//! `neopeek-render`; the binary keeps wiring, app state, and input mapping.
+//! HUD + theming land in later milestones.
 
 mod app;
 mod cli_actions;
-mod renderer;
+mod dsp;
+mod input;
 
 use neopeek_config::{Cli, Parser as _};
 use tracing_subscriber::EnvFilter;
@@ -27,7 +30,7 @@ fn main() {
     let event_loop = winit::event_loop::EventLoop::new().expect("create winit event loop");
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
 
-    let mut app_state = app::App::default();
+    let mut app_state = app::App::new(cli.device.clone());
     if let Err(err) = event_loop.run_app(&mut app_state) {
         tracing::error!("event loop error: {err}");
         std::process::exit(1);
