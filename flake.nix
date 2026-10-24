@@ -20,11 +20,14 @@
           buildInputs = with pkgs; [ libpulseaudio alsa-lib vulkan-loader ];
 
           # makeWrapper.pc is provided in stdenv hooks; wrapProgram keeps
-          # libpulse/alsa/vulkan loader paths visible under `nix run`.
+          # runtime-dlopen'd libs (pulse, alsa, vulkan loader, wayland,
+          # xkbcommon, X11 client libs) visible under `nix run`.
           postInstall = ''
             wrapProgram $out/bin/neopeek \
               --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [
                 pkgs.libpulseaudio pkgs.alsa-lib pkgs.vulkan-loader
+                pkgs.wayland pkgs.libxkbcommon
+                pkgs.libx11 pkgs.libxcursor pkgs.libxrandr pkgs.libxi
               ]}
           '';
 
@@ -44,6 +47,7 @@
             cargo rustc rustfmt clippy
             pkg-config
             libpulseaudio alsa-lib vulkan-loader
+            wayland libxkbcommon libx11 libxcursor libxrandr libxi
             vulkan-tools
           ];
         };

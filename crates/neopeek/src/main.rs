@@ -27,7 +27,16 @@ fn main() {
         return;
     }
 
-    let event_loop = winit::event_loop::EventLoop::new().expect("create winit event loop");
+    let event_loop = match winit::event_loop::EventLoop::new() {
+        Ok(el) => el,
+        Err(err) => {
+            eprintln!(
+                "no windowing runtime libraries found -- if you built via nix, \
+                 ensure the wrapper includes wayland/x11 libs\n({err})"
+            );
+            std::process::exit(1);
+        }
+    };
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
 
     let mut app_state =
