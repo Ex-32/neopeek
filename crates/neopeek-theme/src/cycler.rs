@@ -24,9 +24,14 @@ impl Cycler {
     }
 
     /// Advances and wraps; returns the newly selected theme source.
-    pub fn cycle(&mut self) -> crate::LoadedTheme {
+    pub fn cycle(&mut self) -> &crate::LoadedTheme {
         self.pos = (self.pos + 1) % self.entries.len();
-        self.entries[self.pos].clone()
+        &self.entries[self.pos]
+    }
+
+    /// The currently selected theme source.
+    pub fn current(&self) -> &crate::LoadedTheme {
+        &self.entries[self.pos]
     }
 }
 

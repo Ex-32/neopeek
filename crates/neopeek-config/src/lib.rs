@@ -47,6 +47,15 @@ pub struct Cli {
     /// (PLAN.md §4.3). Off by default.
     #[arg(long, help = "slow continuous yaw (sndpeek-style autospin)")]
     pub autospin: bool,
+
+    /// Theme: built-in name (`Ember`/`Ice`/`Terminal`) or path to a
+    /// `.ron` theme file (PLAN.md §6.2). Missing/malformed → Ember.
+    #[arg(long, value_name = "NAME|FILE", help = "theme name or .ron path")]
+    pub theme: Option<String>,
+
+    /// Re-parse --theme's file on every change (dev aid). Off by default.
+    #[arg(long, help = "hot-reload the loaded theme file")]
+    pub watch_theme: bool,
 }
 
 impl Cli {

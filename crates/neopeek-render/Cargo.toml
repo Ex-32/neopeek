@@ -8,6 +8,7 @@ authors.workspace = true
 
 [dependencies]
 neopeek-dsp.workspace = true
+neopeek-theme.workspace = true
 bytemuck.workspace = true
 ringbuf.workspace = true
 wgpu.workspace = true

@@ -14,7 +14,8 @@ use crate::views::ViewSettings;
 /// Meter dB window.
 pub const METER_FLOOR_DB: f32 = -60.0;
 pub const METER_CEIL_DB: f32 = 0.0;
-/// Peak-hold duration; theme override comes with M7.
+/// Peak-hold duration; the theme's `meters.peak_hold_ms` is the
+/// authoritative mirror (kept as the Ember default for tests).
 pub const PEAK_HOLD_MS: u64 = 800;
 
 /// Meter quad layout constants, physical pixels.
@@ -228,6 +229,8 @@ pub struct HudSources<'a> {
     pub depth: usize,
     pub fps: f32,
     pub frame_ms: f32,
+    /// Peak-hold window from the theme's `meters.peak_hold_ms` (M7).
+    pub peak_hold_ms: u64,
     pub settings: &'a ViewSettings,
     pub latest: Option<&'a Frame>,
 }
@@ -241,7 +244,7 @@ impl HudData {
         let rate = src.rate;
         // Advance the peak-hold even while frozen/muted so the tick
         // visibly expires on the wall clock.
-        meter_state.update(src.latest.map_or([0.0; 2], |f| f.peak), now_millis(), PEAK_HOLD_MS);
+        meter_state.update(src.latest.map_or([0.0; 2], |f| f.peak), now_millis(), src.peak_hold_ms);
         if let Some(f) = src.latest {
             smooth.push(frame_features(f));
         }
@@ -428,6 +431,7 @@ mod tests {
                 depth: 48,
                 fps: 60.0,
                 frame_ms: 16.6,
+                peak_hold_ms: PEAK_HOLD_MS,
                 settings: &settings,
                 latest: Some(&f),
             },
@@ -458,6 +462,7 @@ mod tests {
                 depth: 48,
                 fps: 0.0,
                 frame_ms: 0.0,
+                peak_hold_ms: PEAK_HOLD_MS,
                 settings: &settings,
                 latest: None,
             },
@@ -474,5 +479,12 @@ mod tests {
     }
     fn approx_f64(a: f64, b: f64) {
         assert!((a - b).abs() < 1e-9, "{a} vs {b}");
+    }
+
+    /// The Ember theme must mirror this crate's M6 hardcoded hold.
+    #[test]
+    fn theme_peak_hold_matches_constant() {
+        let ember = neopeek_theme::builtin("Ember").expect("Ember parses");
+        assert_eq!(ember.meters.peak_hold_ms, PEAK_HOLD_MS);
     }
 }

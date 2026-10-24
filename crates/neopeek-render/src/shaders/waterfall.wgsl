@@ -20,6 +20,13 @@ struct WaterUniforms {
     gain: f32,
     freq_scale: f32,
     drift: f32, // slice-fade animation factor in 0…1
+    pad: vec3<f32>,
+    past_color: vec4<f32>,  // theme (PLAN.md §6.1)
+    future_color: vec4<f32>,
+    now_color: vec4<f32>,
+    db_floor: f32,
+    db_ceil: f32,
+    pad_end: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> u: WaterUniforms;
@@ -59,16 +66,16 @@ fn vs_main(
 
     let y_lin = u.gain * u.freq_scale * 1.8 * sqrt(25.0 * mag);
     let m_db = max(mag, 1e-30);
-    let y_db = u.gain * u.freq_scale * ((20.0 * log10(m_db / 8.0) + 80.0) / 80.0);
+    let y_db = u.gain * u.freq_scale * ((20.0 * log10(m_db / 8.0) - u.db_floor) / (u.db_ceil - u.db_floor));
     let y = select(y_lin, y_db, u.db > 0.5);
 
     let fval = (depth - s + u.drift) / depth;
 
-    let past = vec3<f32>(0.4 * fval, 1.0 * fval, 0.4 * fval);
+    let past = u.past_color.rgb * fval;
     let rainbow = hue_rgb(0.15 + 0.55 * fval);
     var color = select(past, rainbow, u.rainbow > 0.5);
     if (slice == 0u) {
-        color = vec3<f32>(0.4, 1.0, 1.0); // the "now" line
+        color = u.now_color.rgb; // the "now" line
     }
 
     return VsOut {

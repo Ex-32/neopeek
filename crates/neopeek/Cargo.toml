@@ -11,6 +11,7 @@ neopeek-audio.workspace = true
 neopeek-config.workspace = true
 neopeek-dsp.workspace = true
 neopeek-render.workspace = true
+neopeek-theme.workspace = true
 ringbuf.workspace = true
 winit.workspace = true
 tracing.workspace = true

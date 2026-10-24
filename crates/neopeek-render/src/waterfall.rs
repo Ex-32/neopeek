@@ -6,7 +6,8 @@ use crate::grid::{self, DEPTH};
 
 const SHADER: &str = include_str!("shaders/waterfall.wgsl");
 
-/// Uniform block matching `shaders/waterfall.wgsl`.
+/// Uniform block matching `shaders/waterfall.wgsl` byte-for-byte (the
+/// pad/pad_end fields mirror WGSL's vec3/vec4 16-byte alignment).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WaterUniforms {
@@ -21,6 +22,17 @@ pub struct WaterUniforms {
     pub gain: f32,
     pub freq_scale: f32,
     pub drift: f32, // slice-fade animation factor 0…1
+    /// Aligns the color vec3s to offset 112 (as WGSL does).
+    pub pad: [f32; 3],
+    /// Theme colors (PLAN.md §6.1); rgb used, a ignored.
+    pub past_color: [f32; 4],
+    pub future_color: [f32; 4],
+    pub now_color: [f32; 4],
+    /// dB magnitude mapping window (Ember matches the M4 formula).
+    pub db_floor: f32,
+    pub db_ceil: f32,
+    /// Brings the block to 176 bytes = WGSL struct size (align 16).
+    pub pad_end: [f32; 2],
 }
 
 impl WaterUniforms {
@@ -36,6 +48,13 @@ impl WaterUniforms {
             gain: 1.0,
             freq_scale: 1.0,
             drift: 0.0,
+            pad: [0.0; 3],
+            past_color: [0.4, 1.0, 0.4, 1.0],
+            future_color: [1.0, 0.7, 0.4, 1.0],
+            now_color: [0.4, 1.0, 1.0, 1.0],
+            db_floor: -80.0,
+            db_ceil: 0.0,
+            pad_end: [0.0; 2],
         }
     }
 }
@@ -233,4 +252,22 @@ fn create_grid_buffers(
     ib.unmap();
 
     (vb, ib, index_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Rust block must have exactly the WGSL-side size (176 = 11×16),
+    /// else the uniform binding fails min-binding validation.
+    #[test]
+    fn uniforms_match_wgsl_layout() {
+        assert_eq!(std::mem::size_of::<WaterUniforms>(), 176);
+        assert_eq!(
+            std::mem::offset_of!(WaterUniforms, past_color),
+            16 * 7,
+            "colors start after 11 vec4 slots (mat4 + 4 scalars + pad)"
+        );
+        assert_eq!(std::mem::offset_of!(WaterUniforms, db_floor), 160);
+    }
 }

@@ -9,6 +9,7 @@ use glyphon::cosmic_text as cosmic_text;
 use glyphon::{Resolution, TextArea, TextBounds, TextRenderer, Viewport};
 
 use crate::hud::{BAR_GAP, HUD_MARGIN, HudData};
+use neopeek_theme::Theme;
 
 /// Embedded OFL monospace font (single weight); cosmic-text's system
 /// fallback chain stays available for anything this lacks.
@@ -26,10 +27,22 @@ pub fn ortho_pixels(width: u32, height: u32) -> [f32; 16] {
     ]
 }
 
-/// Ember ramp: measure fill fraction 0…1 → RGB (green low → red high).
-pub fn gradient_color(fill: f32) -> [f32; 3] {
-    let fill = fill.clamp(0.0, 1.0);
-    [0.35 + 0.65 * fill, 1.0 - 0.7 * fill, 0.3]
+/// Meter-gradient: fill fraction 0…1 → RGB lerp between the theme's
+/// grad_low/grad_high (Ember reproduces the M6 green→red ramp).
+pub fn gradient_color(low: [f32; 3], high: [f32; 3], fill: f32) -> [f32; 3] {
+    let t = fill.clamp(0.0, 1.0);
+    // Exact at the endpoints (t=1 L/R rounding shouldn't shift hues).
+    if t <= 0.0 {
+        return low;
+    }
+    if t >= 1.0 {
+        return high;
+    }
+    let mut out = [0.0; 3];
+    for (o, (l, h)) in out.iter_mut().zip(low.iter().zip(high)) {
+        *o = l + (h - l) * t;
+    }
+    out
 }
 
 /// One axis-aligned colored rect, uploaded as one instance record
@@ -158,13 +171,15 @@ impl HudQuads {
     }
 
     /// Re-lays out the meter rects (DPI-scaled) and uploads everything.
-    pub fn prepare(&mut self, queue: &wgpu::Queue, hud: &HudData, width: u32, height: u32, scale: f32) {
+    pub fn prepare(&mut self, queue: &wgpu::Queue, hud: &HudData, width: u32, height: u32, scale: f32, theme: &Theme) {
         queue.write_buffer(
             &self.uniform,
             0,
             bytemuck::bytes_of(&ortho_pixels(width, height)),
         );
         self.verts.clear();
+        let grad_low = Theme::rgb(&theme.meters.grad_low);
+        let grad_high = Theme::rgb(&theme.meters.grad_high);
         for (c, r) in crate::hud::meter_rects(hud.rms_fill, hud.peak_fill)
             .iter()
             .enumerate()
@@ -177,7 +192,7 @@ impl HudQuads {
             );
             // 6 rects: channel 0 = indices 0…2, channel 1 = 3…5.
             let color = if c % 3 == 1 {
-                let tint = gradient_color(hud.rms_fill[c / 3]);
+                let tint = gradient_color(grad_low, grad_high, hud.rms_fill[c / 3]);
                 [tint[0], tint[1], tint[2], 1.0]
             } else if c % 3 == 2 {
                 [1.0, 1.0, 1.0, 0.95]
@@ -202,6 +217,9 @@ impl HudQuads {
     }
 }
 
+/// One laid-out text panel: buffer, pixel position, rgb color.
+type Area<'a> = (&'a cosmic_text::Buffer, f32, f32, (u8, u8, u8));
+
 /// Persistent glyphon state for the HUD text.
 pub struct HudUI {
     atlas: glyphon::TextAtlas,
@@ -209,16 +227,17 @@ pub struct HudUI {
     swash: cosmic_text::SwashCache,
     viewport: Viewport,
     font_system: cosmic_text::FontSystem,
-    /// [0] features, [1] perf, [2] device, [3] overlay.
-    buffers: [cosmic_text::Buffer; 4],
+    /// [0] features, [1] perf, [2] device, [3] overlay, [4] keybind hints.
+    buffers: Vec<cosmic_text::Buffer>,
+    /// Font size the buffers were built with (theme font_size, M7).
+    font_px: f32,
 }
 
 impl HudUI {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let mut font_system = cosmic_text::FontSystem::new();
-        font_system
-            .db_mut()
-            .load_font_data(FONT_JETBRAINS_MONO.to_vec());
+        // Font size/colors come from the theme at each `prepare`; the
+        // buffers start at the Ember default metrics.
+        let font_px = 14.0;
         let cache = glyphon::Cache::new(device);
         let mut atlas = glyphon::TextAtlas::new(device, queue, &cache, format);
         let renderer = TextRenderer::new(
@@ -227,21 +246,34 @@ impl HudUI {
             wgpu::MultisampleState::default(),
             None,
         );
-        let buffers =
-            std::array::from_fn(|_| cosmic_text::Buffer::new_empty(cosmic_text::Metrics::new(14.0, 20.0)));
+        let mut font_system = cosmic_text::FontSystem::new();
+        font_system.db_mut().load_font_data(FONT_JETBRAINS_MONO.to_vec());
         Self {
             atlas,
             renderer,
             swash: cosmic_text::SwashCache::new(),
             viewport: Viewport::new(device, &cache),
             font_system,
-            buffers,
+            buffers: HudUI::make_buffers(font_px),
+            font_px,
         }
     }
 
+    /// Five text panels, rebuilt when the theme's font size changes.
+    fn make_buffers(font_px: f32) -> Vec<cosmic_text::Buffer> {
+        // 14 px font / 20 px line height at the default (ratio 1.43).
+        let metrics = cosmic_text::Metrics::new(font_px, (font_px * 1.43).max(1.0));
+        std::iter::repeat_with(|| cosmic_text::Buffer::new_empty(metrics))
+            .take(5)
+            .collect()
+    }
+
     /// Builds the HUD text (feature panel, diagnostics, device line,
-    /// overlay), reshapes it, and prepares glyphon for this frame's
-    /// resolution.
+    /// overlay, hints), reshapes it, and prepares glyphon for this
+    /// frame's resolution. Colors + font size come from the theme (M7).
+    ///
+    /// The wide signature is deliberate: text + quads + theme + DPI.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -250,10 +282,21 @@ impl HudUI {
         width: u32,
         height: u32,
         scale: f32,
+        theme: &Theme,
     ) {
+        if (theme.hud.font_size - self.font_px).abs() > f32::EPSILON {
+            // Theme swap: rebuild the buffers at the new metrics.
+            self.font_px = theme.hud.font_size;
+            self.buffers = HudUI::make_buffers(self.font_px);
+        }
+        let (text, accent) = (
+            Theme::rgb8(&theme.hud.text),
+            Theme::rgb8(&theme.hud.accent),
+        );
         feature_panel(self, hud);
         perf_panel(self, hud);
         device_panel(self, hud);
+        hints_panel(self);
         overlay_panel(self, hud);
 
         for buf in self.buffers.iter_mut() {
@@ -262,23 +305,27 @@ impl HudUI {
         self.viewport.update(queue, Resolution { width, height });
 
         // Layout (physical pixels, DPI-scaled): feature panel below the
-        // meter quads, perf top-right, device line bottom, overlay centered.
+        // meter quads, perf top-right, device stats bottom, keybind line
+        // dim under it, overlay centered.
         let feature_top = HUD_MARGIN + 2.0 * BAR_GAP + 6.0;
-        let ours: [(&cosmic_text::Buffer, f32, f32); 4] = [
-            (&self.buffers[0], HUD_MARGIN, feature_top),
-            (&self.buffers[1], width as f32 - 170.0, HUD_MARGIN),
-            (&self.buffers[2], HUD_MARGIN, height as f32 - 46.0),
-            (&self.buffers[3], width as f32 / 2.0 - 120.0, height as f32 / 2.0 - 30.0),
+        let hint_color = Theme::rgb8(&theme.hud.dim);
+        let hint_y = if hud.show_hints { height as f32 - 24.0 } else { -1e5 };
+        let ours: [Area; 5] = [
+            (&self.buffers[0], HUD_MARGIN, feature_top, text),
+            (&self.buffers[1], width as f32 - 170.0, HUD_MARGIN, text),
+            (&self.buffers[2], HUD_MARGIN, height as f32 - 46.0, text),
+            (&self.buffers[3], width as f32 / 2.0 - 120.0, height as f32 / 2.0 - 30.0, accent),
+            (&self.buffers[4], HUD_MARGIN, hint_y, hint_color),
         ];
         let areas: Vec<TextArea> = ours
             .iter()
-            .map(|(buf, left, top)| TextArea {
+            .map(|(buf, left, top, color)| TextArea {
                 buffer: buf,
                 left: left * scale,
                 top: top * scale,
                 scale,
                 bounds: TextBounds::default(),
-                default_color: cosmic_text::Color::rgb(207, 211, 220),
+                default_color: cosmic_text::Color::rgb(color.0, color.1, color.2),
                 custom_glyphs: &[],
             })
             .collect();
@@ -300,7 +347,7 @@ impl HudUI {
     }
 }
 
-// The four text panels are small writers kept separate for readability.
+// The five text panels are small writers kept separate for readability.
 
 fn feature_panel(ui: &mut HudUI, hud: &HudData) {
     let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
@@ -316,7 +363,7 @@ fn perf_panel(ui: &mut HudUI, hud: &HudData) {
 
 fn device_panel(ui: &mut HudUI, hud: &HudData) {
     let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
-    let stats = format!(
+    let text = format!(
         "{} · {} · {} Hz · FFT {} (window {}, hop {:.1} ms) · depth {}",
         hud.source_name,
         hud.backend,
@@ -326,15 +373,19 @@ fn device_panel(ui: &mut HudUI, hud: &HudData) {
         hud.hop_ms,
         hud.depth,
     );
-    let text = if hud.show_hints {
-        format!(
-            "{stats}\n{}",
-            "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · 1 wave · 2 liss · 3 waterfall · d dB · r rainbow · u i spacing · j k z-offset · l L liss · f freeze · m mute · h hints · H hud · F X Y Z snap · p print · q quit"
-        )
-    } else {
-        stats
-    };
     ui.buffers[2].set_text(&text, &attrs, Shaping::Advanced, None);
+}
+
+/// The keybind dump lives in its own buffer so the theme's `dim` color
+/// can shade it independently of the stats line.
+fn hints_panel(ui: &mut HudUI) {
+    let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
+    ui.buffers[4].set_text(
+        "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · 1 wave · 2 liss · 3 waterfall · d dB · r rainbow · u i spacing · j k z-offset · l L liss · f freeze · m mute · h hints · H hud · T theme · F X Y Z snap · p print · q quit",
+        &attrs,
+        Shaping::Advanced,
+        None,
+    );
 }
 
 fn overlay_panel(ui: &mut HudUI, hud: &HudData) {
@@ -348,19 +399,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gradient_maps_green_to_red() {
-        let low = gradient_color(0.0);
-        let mid = gradient_color(0.5);
-        let high = gradient_color(1.0);
-        assert_eq!(low, [0.35, 1.0, 0.3]);
-        assert_eq!(high, [1.0, 0.3, 0.3]);
-        // Monotonic red up, green down; blue constant.
+    fn gradient_lerps_theme_endpoints() {
+        let ember = neopeek_theme::builtin("Ember").unwrap();
+        let low = Theme::rgb(&ember.meters.grad_low);
+        let high = Theme::rgb(&ember.meters.grad_high);
+        assert_eq!(gradient_color(low, high, 0.0), low);
+        assert_eq!(gradient_color(low, high, 1.0), high);
+        let mid = gradient_color(low, high, 0.5);
+        // Monotonic red up, green down (Ember: green→red).
         assert!(mid[0] > low[0] && mid[0] < high[0]);
         assert!(mid[1] < low[1] && mid[1] > high[1]);
-        assert_eq!(mid[2], 0.3);
         // Out-of-range inputs clamp.
-        assert_eq!(gradient_color(-1.0), low);
-        assert_eq!(gradient_color(2.0), high);
+        assert_eq!(gradient_color(low, high, -1.0), low);
+        assert_eq!(gradient_color(low, high, 2.0), high);
     }
 
     #[test]

@@ -13,6 +13,7 @@ use std::time::Instant;
 use winit::window::Window;
 
 use neopeek_dsp::{Frame, WINDOW_FRAMES};
+use neopeek_theme::Theme;
 
 use crate::camera::Camera;
 use crate::frame_ring::{self, FrameCons, FrameProd, FRAME_RING_FRAMES};
@@ -22,14 +23,6 @@ use crate::hud_render::{HudQuads, HudUI};
 use crate::lines::LinePipeline;
 use crate::views::{LineVertex, ViewSettings};
 use crate::waterfall::{WaterUniforms, Waterfall};
-
-/// Theme background (hardcoded until theming lands, M7): `#0b0b10`.
-const CLEAR_COLOR: wgpu::Color = wgpu::Color {
-    r: 0.043,
-    g: 0.043,
-    b: 0.063,
-    a: 1.0,
-};
 
 /// Slice period at sndpeek's default 48 kHz, for the drift animation.
 const DEFAULT_RATE: u32 = 48_000;
@@ -237,8 +230,9 @@ impl Renderer {
     }
 
     /// Draws one frame: the 3D scene pass, then the screen-space HUD pass
-    /// (`hud` may be `None` while the HUD toggle is off).
-    pub fn render(&mut self, settings: &ViewSettings, hud: Option<&HudData>, scale: f32) {
+    /// (`hud` may be `None` while the HUD toggle is off). `theme` drives
+    /// all colors (M7).
+    pub fn render(&mut self, settings: &ViewSettings, hud: Option<&HudData>, scale: f32, theme: &Theme) {
         // Drain pending frames (FIFO, oldest first) unless frozen or
         // muted; each is appended to the history row ring. Even with no
         // new frames we continue rendering so scale/camera changes stay
@@ -281,6 +275,13 @@ impl Renderer {
             gain: 1.0,
             freq_scale: settings.freq_scale,
             drift,
+            pad: [0.0; 3],
+            past_color: theme.waterfall.past,
+            future_color: theme.waterfall.future,
+            now_color: theme.waterfall.now_line,
+            db_floor: theme.waterfall.db_floor,
+            db_ceil: theme.waterfall.db_ceil,
+            pad_end: [0.0; 2],
         };
         self.waterfall.upload_uniform(&self.queue, &uniforms);
 
@@ -315,7 +316,12 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(CLEAR_COLOR),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: theme.background[0] as f64,
+                            g: theme.background[1] as f64,
+                            b: theme.background[2] as f64,
+                            a: theme.background[3] as f64,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -336,11 +342,11 @@ impl Renderer {
                 self.waterfall.draw(&mut pass);
             }
             if settings.waveform_on && self.latest.is_some() {
-                self.waveform.set(&self.queue, &vp, [0.4, 0.4, 1.0]);
+                self.waveform.set(&self.queue, &vp, Theme::rgb(&theme.waveform.color));
                 self.waveform.draw_strip(&mut pass, &self.queue, &self.scratch_wave);
             }
             if settings.lissajous_on && self.latest.is_some() {
-                self.lissajous.set(&self.queue, &vp, [1.0, 1.0, 0.5]);
+                self.lissajous.set(&self.queue, &vp, Theme::rgb(&theme.lissajous.color));
                 self.lissajous.draw_strip(&mut pass, &self.queue, &self.scratch_liss);
             }
         }
@@ -350,8 +356,8 @@ impl Renderer {
         // passes `None` while the HUD toggle is off.
         if let Some(hud) = hud {
             let (width, height) = (self.config.width, self.config.height);
-            self.hud_quads.prepare(&self.queue, hud, width, height, scale);
-            self.hud_ui.prepare(&self.device, &self.queue, hud, width, height, scale);
+            self.hud_quads.prepare(&self.queue, hud, width, height, scale, theme);
+            self.hud_ui.prepare(&self.device, &self.queue, hud, width, height, scale, theme);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("neopeek-hud"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

@@ -20,6 +20,7 @@ use crate::dsp::AudioPipeline;
 use crate::input::{handle_camera_key, handle_key};
 
 use neopeek_dsp::WINDOW_FRAMES;
+use neopeek_theme::{cycler::Cycler, Theme};
 
 pub struct App {
     window: Option<Arc<Window>>,
@@ -41,6 +42,8 @@ pub struct App {
     fps: f32,
     /// Smoothed frame time, ms.
     frame_ms: f32,
+    // theming (M7)
+    cycler: Cycler,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -50,8 +53,13 @@ enum DragButton {
 }
 
 impl App {
-    pub fn new(device: Option<String>, autospin: bool) -> Self {
-        Self {
+    pub fn new(device: Option<String>, autospin: bool, theme_arg: Option<String>) -> Self {
+        let (init, warn) = neopeek_theme::resolve(theme_arg.as_deref());
+        if let Some(msg) = warn {
+            tracing::warn!("{msg}");
+        }
+        tracing::info!(theme = %init.theme.name, "theme loaded");
+        let mut app = Self {
             window: None,
             renderer: None,
             settings: ViewSettings::default(),
@@ -66,7 +74,32 @@ impl App {
             smooth: FeatureSmooth::default(),
             fps: 0.0,
             frame_ms: 0.0,
-        }
+            cycler: Cycler::new(init),
+        };
+        app.apply_theme_knobs();
+        app
+    }
+
+    fn theme(&self) -> &Theme {
+        &self.cycler.current().theme
+    }
+
+    /// `T`: next theme; re-seeds the theme-owned view knobs.
+    pub fn cycle_theme(&mut self) {
+        let next = self.cycler.cycle();
+        tracing::info!(theme = %next.theme.name, "theme cycled");
+        self.apply_theme_knobs();
+    }
+
+    /// Rainbow default + Lissajous scale are theme-owned; re-applied on
+    /// every theme application (startup and `T`).
+    fn apply_theme_knobs(&mut self) {
+        let (rainbow, liss) = {
+            let t = self.theme();
+            (t.waterfall.rainbow, t.lissajous.scale)
+        };
+        self.settings.rainbow = rainbow;
+        self.settings.liss_scale = liss;
     }
 
     fn request_redraw(&self) {
@@ -125,6 +158,9 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::RedrawRequested => {
+                // Copy the active theme out first (small; ~6 short
+                // strings, buys clean disjoint borrows below).
+                let theme = self.theme().clone();
                 if let Some(renderer) = self.renderer.as_mut() {
                     // `--autospin`: continuous slow yaw (sndpeek's charm).
                     let now = Instant::now();
@@ -156,6 +192,7 @@ impl ApplicationHandler for App {
                     );
                     let mut meter = self.meter;
                     let mut smooth = self.smooth;
+                    let peak_hold_ms = theme.meters.peak_hold_ms;
                     let hud = self.settings.hud_on.then(|| {
                         let (source_name, backend) = match self.audio.as_ref() {
                             Some(audio) => (audio.source_name(), "pulse"),
@@ -171,6 +208,7 @@ impl ApplicationHandler for App {
                                 depth,
                                 fps: self.fps,
                                 frame_ms: self.frame_ms,
+                                peak_hold_ms,
                                 settings: &self.settings,
                                 latest: latest.as_ref(),
                             },
@@ -181,7 +219,7 @@ impl ApplicationHandler for App {
                     self.meter = meter;
                     self.smooth = smooth;
                     let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-                    renderer.render(&self.settings, hud.as_ref(), scale);
+                    renderer.render(&self.settings, hud.as_ref(), scale, &theme);
                 }
             }
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -244,6 +282,10 @@ impl ApplicationHandler for App {
                 match event.logical_key.as_ref() {
                     Key::Named(NamedKey::Escape) => event_loop.exit(),
                     Key::Character(c) => {
+                        // `T`: theme cycle (App-level state, not settings).
+                        if c == "T" {
+                            self.cycle_theme();
+                        }
                         let quit =
                             handle_key(&mut self.settings, c)
                                 || handle_camera_key(renderer_camera(self), c);
