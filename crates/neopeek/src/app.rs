@@ -171,9 +171,10 @@ impl App {
     /// rebuilds the HUD state, draws the scene + HUD passes, and presents.
     /// Called from `RedrawRequested` and once synchronously from `resumed`.
     fn draw_frame(&mut self) {
-        // Copy the active theme out first (small; ~6 short strings, buys
-        // clean disjoint borrows below).
-        let theme = self.theme().clone();
+        // Borrow the theme through the field path (`self.theme()` would
+        // take a whole-struct `&self`, clashing with the `self.renderer`
+        // mut borrow below). No per-frame clone; disjoint borrows only.
+        let theme = &self.cycler.current().theme;
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
@@ -198,15 +199,13 @@ impl App {
             self.fps = 1000.0 / self.frame_ms.max(0.01);
         }
         // Assemble the HUD before render: the meter/peak-hold state
-        // machines live in the binary, the drained frames inside the
-        // renderer (copied out above). The closure captures only disjoint
-        // `App` fields.
-        let (adapter, rate, depth, latest) = (
-            renderer.adapter_name().to_owned(),
-            renderer.rate(),
-            renderer.history_depth(),
-            renderer.latest_frame().copied(),
-        );
+        // machines live in the binary. The closure captures only
+        // disjoint `App` fields plus a shared reborrow of `renderer`;
+        // the borrow ends when the `Option<HudData>` is materialized
+        // (HudData owns its strings), so `render` below can take the
+        // renderer mutably again. No per-frame copies: adapter name and
+        // latest frame are passed by reference now (previously one
+        // String clone + a ~29 KB `Frame` copy per frame).
         let mut meter = self.meter;
         let mut smooth = self.smooth;
         let peak_hold_ms = theme.meters.peak_hold_ms;
@@ -220,15 +219,15 @@ impl App {
                 HudSources {
                     source_name,
                     backend,
-                    adapter: &adapter,
-                    rate,
+                    adapter: renderer.adapter_name(),
+                    rate: renderer.rate(),
                     window_frames: WINDOW_FRAMES as u32,
-                    depth,
+                    depth: renderer.history_depth(),
                     fps: self.fps,
                     frame_ms: self.frame_ms,
                     peak_hold_ms,
                     settings: &self.settings,
-                    latest: latest.as_ref(),
+                    latest: renderer.latest_frame(),
                 },
                 &mut meter,
                 &mut smooth,
@@ -237,7 +236,7 @@ impl App {
         self.meter = meter;
         self.smooth = smooth;
         let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-        renderer.render(&self.settings, hud.as_ref(), scale, &theme);
+        renderer.render(&self.settings, hud.as_ref(), scale, theme);
     }
 
     fn request_redraw(&self) {
