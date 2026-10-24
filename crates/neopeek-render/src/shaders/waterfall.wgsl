@@ -93,17 +93,25 @@ fn vs_main(
 
     let fval = (depth - s + u.drift) / depth;
 
-    // Filled-surface mode (M8): color from the theme ramp over the linear
-    // height fraction; depth-cued like the line mode. (Rainbow replaces
-    // this ramp with the height heatmap — see below.)
+    // Filled-surface mode (M8). Rainbow on: the theme surface ramp is
+    // REPLACED by the same per-vertex height heatmap the line mode uses
+    // (the fragment stage refines it per-pixel) — a surface vertex whose
+    // neighbor was the theme ramp keeps a height ≥ 0 handoff. Rainbow
+    // off: the theme ramp exactly as before, including depth-cue
+    // dimming (dimming stays a non-rainbow-only feature).
     if u.surface > 0.5 {
         let t = clamp(y_lin, 0.0, 1.0);
-        var c = textureLoad(ramp, vec2<u32>(u32(t * 255.0 + 0.5), 0u), 0).rgb;
-        c = c * fval;
-        var heat_t = -1.0; // theme ramp: vertex colors are final
+        var c = select(
+            hue_rgb(heat_hue(t)),
+            textureLoad(ramp, vec2<u32>(u32(t * 255.0 + 0.5), 0u), 0).rgb * fval,
+            u.rainbow <= 0.5,
+        );
+        var heat_t = select(t, -1.0, u.rainbow <= 0.5);
         if (slice == 0u) {
-            // The arriving plane blends now_line → future (theme).
+            // The arriving plane blends now_line → future (theme),
+            // rainbow or not: a live marker, not a depth cue.
             c = mix(u.now_color.rgb, u.future_color.rgb, u.drift);
+            heat_t = -1.0;
         }
         return VsOut(
             u.view_proj * vec4<f32>(x, y, z, 1.0),

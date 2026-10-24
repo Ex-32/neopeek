@@ -33,9 +33,9 @@ Mouse: left-drag orbit · shift-/middle-drag pan · wheel zoom.
 | key | action |
 |-----|--------|
 | `1` / `2` / `3` (or `w`) | waveform / Lissajous / waterfall toggle |
-| `S` | filled-surface waterfall mode (theme `surface_ramp` colors) |
+| `S` | filled-surface waterfall mode: theme `surface_ramp` colors — **unless rainbow (`r`) is also on**, in which case the same height heatmap colors the surface (no depth dimming); the arriving plane keeps the theme now/future blend either way |
 | `d` | dB magnitude mode (theme `db_floor`/`db_ceil` window) |
-| `r` | rainbow depth colors |
+| `r` | rainbow = **height heatmap**: color follows the curve's magnitude at each point — cool violet/blue at the floor, cyan/green mid, yellow → red at the crest (same mapping in linear and dB display modes; no depth dimming while on) |
 | `a` | auto-scale waterfall gain — sizes the waterfall height to the audio content each frame (tallest recent content ≈ 8/10 of the view; fast attack, slow release ≈ 1.4 s; silence holds the last gain). Off → the fixed default height returns immediately. |
 | `u` / `i` | slice z-spacing wider/narrower |
 | `j` / `k` | waterfall z-offset toward/away |
