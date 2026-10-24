@@ -72,11 +72,20 @@ pub fn x_from_normalized(n: f32) -> f32 {
 /// DEPTH·1024 of these ≈ 0.6 MB for the default depth, rebuilt on a
 /// depth change.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct GridVertex {
     pub x: f32,
     pub bin: u32,
     pub slice: u32,
+}
+
+/// Grid size depends only on `depth`: [`grid_vertices`] produces exactly
+/// this many vertices for *every* factor. That invariant is what lets
+/// `Waterfall::set_log_factor` rewrite the grid vertex buffer in place —
+/// same byte length, so the queued `write_buffer` always fits — with
+/// factor-dependent *content*.
+pub fn grid_vertex_count(depth: usize) -> usize {
+    depth * BINS
 }
 
 /// Build the full grid (positions fresh every call — callers cache it and
@@ -87,7 +96,7 @@ pub fn grid_vertices(factor: f32, depth: usize) -> Vec<GridVertex> {
     for (k, n) in pos.iter().enumerate() {
         xs[k] = x_from_normalized(*n);
     }
-    let mut out = Vec::with_capacity(depth * BINS);
+    let mut out = Vec::with_capacity(grid_vertex_count(depth));
     for slice in 0..depth {
         for (bin, &x) in xs.iter().enumerate() {
             out.push(GridVertex {
@@ -188,6 +197,46 @@ mod tests {
         // Slices repeat the same x per row.
         assert_eq!(g[3 * BINS].x, g[0].x);
         assert_eq!(g[3 * BINS + BINS - 1].x, g[BINS - 1].x);
+    }
+
+    /// Vertex *content* changes with the factor across the c/v machine's
+    /// whole reachable domain — including the smallest reachable step
+    /// (one `c` from the floor snap). This pins the vertex buffer image
+    /// the waterfall rebuild actually pushes; a value change that left
+    /// `grid_vertices` identical would be the "INFO changed but the axis
+    /// did not" failure mode.
+    #[test]
+    fn factor_changes_grid_x_content() {
+        let mid = BINS / 2 - 1;
+        let at = |f: f32, bin: usize| grid_vertices(f, 2)[bin].x;
+        let lin = at(0.0, mid);
+        let default = at(1.5, mid);
+        let tiny = at(0.05, mid);
+        assert!(tiny > lin && tiny < default, "one c-step off the floor sits between linear ({lin}) and default ({default}), got {tiny}");
+        assert!(at(8.0, mid) > default + 1e-2, "ceiling factor spreads the mid-grid point, got {} vs {default}", at(8.0, mid));
+        // The sndpeek property at grid level: the low end gains x-space
+        // under larger factors (first segment widens).
+        let steal = grid_vertices(0.0, 2);
+        let spread = grid_vertices(1.5, 2);
+        assert!(
+            spread[1].x - spread[0].x > steal[1].x - steal[0].x,
+            "low-end segment widens with the factor"
+        );
+    }
+
+    /// Vertex count is factor-independent (depth is the only determinant)
+    /// — the byte-length half of the in-place `write_buffer` invariant.
+    #[test]
+    fn grid_vertex_count_ignores_factor() {
+        assert_eq!(grid_vertex_count(DEFAULT_DEPTH), DEFAULT_DEPTH * BINS);
+        for depth in [MIN_DEPTH, 13, 48, 100, MAX_DEPTH] {
+            assert_eq!(grid_vertices(0.0, depth).len(), grid_vertex_count(depth));
+            assert_eq!(
+                grid_vertices(8.0, depth).len(),
+                grid_vertices(1.5, depth).len(),
+                "upload byte length must not depend on the factor"
+            );
+        }
     }
 
     #[test]

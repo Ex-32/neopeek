@@ -316,8 +316,19 @@ impl Waterfall {
 
     /// Re-upload the grid vertices when the log factor changed. Indices
     /// never change (same topology), so only the VB is written.
+    ///
+    /// Invariant: this is an **in-place rewrite** of `self.vb`, never a
+    /// buffer swap — [`grid_vertex_count`] is factor-independent (equal
+    /// byte length per depth), so the queued `write_buffer` always fits
+    /// the buffer built at construction. `draw`/`draw_surface` capture
+    /// the *current* `self.vb` every frame and vertex buffers bind on the
+    /// render pass (not through the bind group — the bind group only
+    /// references uniform + history/ramp textures), so there is no stale
+    /// handle: the new x positions take effect on the next pass.
+    /// Buffer handles are exchanged only in [`Self::set_depth`], which
+    /// rebuilds the whole grid + index + bind set in one atomic update.
     pub fn set_log_factor(&mut self, queue: &wgpu::Queue, device: &wgpu::Device, factor: f32) {
-        if factor == self.grid_log_factor {
+        if !needs_rebuild(self.grid_log_factor, factor) {
             return;
         }
         let verts = grid::grid_vertices(factor, self.grid_depth);
@@ -330,6 +341,15 @@ impl Waterfall {
     /// texture view for a changed history depth. Called after swapping in
     /// a fresh `History` — see `Renderer::set_depth`. The grid is built
     /// with the current log factor, so the two knobs compose.
+    ///
+    /// This is the ONLY method that exchanges buffer handles (`vb`, `ib`,
+    /// `surface_ib`) and rebuilds the bind group, and it does all of it
+    /// before any field the draw calls read goes stale: after the return,
+    /// `draw`/`draw_surface` see the new buffers, new index counts, and a
+    /// bind group binding the new history view together with the
+    /// unchanged uniform buffer and ramp view. `grid_log_factor` is
+    /// preserved across the swap so a following `set_log_factor` compares
+    /// against the factor the new grid was actually built with.
     pub fn set_depth(
         &mut self,
         device: &wgpu::Device,
@@ -451,6 +471,17 @@ fn create_buffer_from(
     buf
 }
 
+/// Pure grid-rebuild decision for [`Waterfall::set_log_factor`], kept
+/// side-effect-free so the state machine is unit-testable headlessly (the
+/// build env has no GPU control plane; the device path is re-verified by
+/// clippy + the host flake build). The grid is re-uploaded exactly when
+/// the incoming factor differs from the factor the currently bound
+/// vertex buffer was built with — clamped 0.0 (linear axis)…8.0 are
+/// values the `c`/`v` keys genuinely reach (see `views::adjust_log_factor`).
+fn needs_rebuild(current: f32, incoming: f32) -> bool {
+    incoming != current
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,5 +495,52 @@ mod tests {
         assert_eq!(u.head, 0, "zeroed means head/row 0");
         assert_eq!(u.db, 0.0);
         assert!(u._align_hole.iter().all(|v| *v == 0.0) && u.pad.iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn needs_rebuild_smokes() {
+        assert!(!needs_rebuild(1.5, 1.5), "1.5 → 1.5 is the no-op window");
+        assert!(!needs_rebuild(8.0, 8.0), "ceiling key press");
+        assert!(!needs_rebuild(0.0, 0.0), "pinned floor (`v` on exact zero)");
+        assert!(needs_rebuild(0.0, 8.0), "clamped-domain extremes rebuild");
+        assert!(needs_rebuild(1.5, 1.575), "a single c press");
+        assert!(needs_rebuild(0.0, 0.05), "stepping off the exact linear axis");
+        assert!(needs_rebuild(8.0, 0.0), "collapsing back to fully linear");
+    }
+
+    /// Drive the real `c`/`v` settings machine over its whole reachable
+    /// domain: every value it produces must demand a rebuild relative to
+    /// the previous value, ceiling/floor extraneous presses are the only
+    /// no-ops, and the grid content ends up different from the start —
+    /// i.e. the keybind's INFO value genuinely reaches the vertex buffer.
+    #[test]
+    fn log_factor_machine_rebuilds_and_moves_the_grid() {
+        let mut s = crate::views::ViewSettings::default();
+        let start = s.log_factor;
+        let mut prev = start;
+        let mut rebuilt = 0usize;
+        for _ in 0..64 {
+            s.adjust_log_factor(true); // `c`: ×1.05, clamped at 8.0
+            rebuilt += usize::from(needs_rebuild(prev, s.log_factor));
+            prev = s.log_factor;
+        }
+        assert!((s.log_factor - 8.0).abs() < 1e-4, "clamped at {:?}", s.log_factor);
+        assert!(rebuilt > 30, "c presses rebuild until the ceiling: {rebuilt}");
+        assert!(!needs_rebuild(prev, s.log_factor), "ceiling presses stay silent");
+        while s.log_factor > 0.0 {
+            s.adjust_log_factor(false); // `v`: ×0.95, snaps to 0.0 below 0.05
+        }
+        assert!(needs_rebuild(prev, s.log_factor), "the exact linear axis is a change");
+        prev = s.log_factor;
+        s.adjust_log_factor(false);
+        assert!(!needs_rebuild(prev, s.log_factor), "floor is pinned");
+        s.adjust_log_factor(true);
+        assert!(needs_rebuild(prev, s.log_factor), "0.0 → 0.05 steps off the floor");
+        // End-state proof: the grid the waterfall would now upload differs
+        // in vertex data from the start grid (same length — see grid tests).
+        let start_grid = grid::grid_vertices(start, crate::grid::DEFAULT_DEPTH);
+        let end_grid = grid::grid_vertices(s.log_factor, crate::grid::DEFAULT_DEPTH);
+        assert!(start_grid.len() == end_grid.len() && start_grid != end_grid,
+            "axis moved end-to-end at {:?}", s.log_factor);
     }
 }
