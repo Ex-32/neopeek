@@ -12,6 +12,8 @@
 //! - [`autoscale`]: the content-adaptive waterfall-gain state machine (`a`).
 //! - [`hud`]: headless HUD math (meters, features, overlays, `HudData`).
 //! - [`hud_render`]: the glyphon text pass + meter quad pipeline (M6).
+//! - [`idle`]: the pure idle-pause gate (stop redrawing while audio is
+//!   silent/absent; `IdleGate`).
 //! - [`shell`]: the winit/wgpu window shell + pipelines + per-frame draw.
 //!
 //! Shaders live next to the sources in `shaders/` and are `include_str!`-ed
@@ -30,6 +32,7 @@ pub mod grid;
 pub mod history;
 pub mod hud;
 pub mod hud_render;
+pub mod idle;
 pub mod lines;
 pub mod shell;
 pub mod views;
