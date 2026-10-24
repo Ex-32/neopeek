@@ -16,10 +16,10 @@ struct VsOut {
 
 @vertex
 fn vs_main(@location(0) pos: vec3<f32>) -> VsOut {
-    return VsOut {
-        clip: u.view_proj * vec4<f32>(pos, 1.0),
-        color: u.color.rgb,
-    };
+    return VsOut(
+        u.view_proj * vec4<f32>(pos, 1.0),
+        u.color.rgb,
+    );
 }
 
 @fragment

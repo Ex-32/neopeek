@@ -22,10 +22,10 @@ fn vs_main(
     // Strip corner order: (0,0) → (1,0) → (0,1) → (1,1).
     let corner = vec2<f32>(f32(vi & 1u), f32(vi >> 1u));
     let pos = vec2<f32>(rect.x, rect.y) + corner * vec2<f32>(rect.z, rect.w);
-    return VsOut {
-        clip: u.vp * vec4<f32>(pos, 0.0, 1.0),
-        color: color,
-    };
+    return VsOut(
+        u.vp * vec4<f32>(pos, 0.0, 1.0),
+        color,
+    );
 }
 
 @fragment

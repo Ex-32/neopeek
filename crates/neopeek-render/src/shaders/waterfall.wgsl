@@ -69,7 +69,8 @@ fn vs_main(
 
     let y_lin = u.gain * u.freq_scale * 1.8 * sqrt(25.0 * mag);
     let m_db = max(mag, 1e-30);
-    let y_db = u.gain * u.freq_scale * ((20.0 * log10(m_db / 8.0) - u.db_floor) / (u.db_ceil - u.db_floor));
+    // WGSL has no `log10` builtin; log10(x) == log2(x) / 3.32192809486.
+    let y_db = u.gain * u.freq_scale * ((20.0 * log2(m_db / 8.0) / 3.32192809486 - u.db_floor) / (u.db_ceil - u.db_floor));
     let y = select(y_lin, y_db, u.db > 0.5);
 
     let fval = (depth - s + u.drift) / depth;
@@ -84,10 +85,10 @@ fn vs_main(
             // The arriving plane blends now_line → future (theme).
             c = mix(u.now_color.rgb, u.future_color.rgb, u.drift);
         }
-        return VsOut {
-            clip: u.view_proj * vec4<f32>(x, y, z, 1.0),
-            color: c,
-        };
+        return VsOut(
+            u.view_proj * vec4<f32>(x, y, z, 1.0),
+            c,
+        );
     }
 
     let past = u.past_color.rgb * fval;
@@ -97,10 +98,10 @@ fn vs_main(
         color = u.now_color.rgb; // the "now" line
     }
 
-    return VsOut {
-        clip: u.view_proj * vec4<f32>(x, y, z, 1.0),
-        color: color,
-    };
+    return VsOut(
+        u.view_proj * vec4<f32>(x, y, z, 1.0),
+        color,
+    );
 }
 
 @fragment

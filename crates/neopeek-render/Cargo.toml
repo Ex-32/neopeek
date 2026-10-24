@@ -16,3 +16,6 @@ winit.workspace = true
 glyphon.workspace = true
 pollster.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+naga = "30"
