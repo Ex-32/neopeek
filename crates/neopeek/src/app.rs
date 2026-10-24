@@ -225,6 +225,7 @@ impl ApplicationHandler for App {
                     let peak_hold_ms = theme.meters.peak_hold_ms;
                     let hud = self.settings.hud_on.then(|| {
                         let (source_name, backend) = match self.audio.as_ref() {
+                            Some(audio) if audio.capture_lost() => ("(capture lost)", "pulse"),
                             Some(audio) => (audio.source_name(), "pulse"),
                             None => ("(no capture)", "none"),
                         };

@@ -60,6 +60,13 @@ impl AudioPipeline {
     pub fn source_name(&self) -> &str {
         &self.capture.source_name
     }
+
+    /// `true` once the capture stream died *after* a successful startup
+    /// handshake (device unplugged, server gone). The waterfall then
+    /// renders flat; the app can use this for a HUD notice.
+    pub fn capture_lost(&self) -> bool {
+        self.capture.lost()
+    }
 }
 
 impl Drop for AudioPipeline {

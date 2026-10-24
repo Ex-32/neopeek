@@ -53,6 +53,10 @@ pub type PcmRb = SharedRb<Heap<f32>>;
 pub type PcmProd = CachingProd<Arc<PcmRb>>;
 pub type PcmCons = CachingCons<Arc<PcmRb>>;
 
+/// Startup handshake payload: negotiated (source, rate, channels), or
+/// the failure that prevented reaching stream-Ready.
+type HandshakeMsg = Result<(String, u32, u8), CaptureError>;
+
 #[derive(Debug, thiserror::Error)]
 pub enum CaptureError {
     #[error("libpulse unavailable (library or daemon missing)")]
@@ -88,6 +92,11 @@ pub struct DeviceInfo {
 /// Number of PCM samples dropped due to ring overflow since stream start.
 pub type OverflowCounter = Arc<AtomicU64>;
 
+/// Incremented once when the stream dies *after* the startup handshake
+/// (0 = live/never-lost). Lightweight late-failure signal for consumers
+/// that no longer hold the handshake channel (see [`Capture::lost`]).
+pub type LostCounter = Arc<AtomicU64>;
+
 fn bump_overflow(counter: &OverflowCounter, n: u64) {
     if n > 0 {
         counter.fetch_add(n, Ordering::Relaxed);
@@ -101,6 +110,7 @@ pub struct Capture {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     overflow: OverflowCounter,
+    lost: LostCounter,
     pub source_name: String,
     pub rate: u32,
     pub channels: u8,
@@ -113,21 +123,23 @@ impl Capture {
     pub fn start(device: Option<String>) -> Result<(Self, PcmCons), CaptureError> {
         let (prod, cons) = HeapRb::<f32>::new(PCM_RING_FRAMES).split();
         let overflow: OverflowCounter = Arc::new(AtomicU64::new(0));
+        let lost: LostCounter = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = std::sync::mpsc::channel::<Result<(String, u32, u8), CaptureError>>();
+        let (tx, rx) = std::sync::mpsc::channel::<HandshakeMsg>();
 
         let handle = std::thread::Builder::new()
             .name("neopeek-capture".into())
             .spawn({
                 let overflow = overflow.clone();
+                let lost = lost.clone();
                 let stop = stop.clone();
-                move || capture_thread(device, prod, overflow, stop, tx)
+                move || capture_thread(device, prod, overflow, lost, stop, tx)
             })
             .map_err(|err| CaptureError::Handshake(err.to_string()))?;
 
         let result = rx
             .recv_timeout(Duration::from_secs(5))
-            .map_err(|err| CaptureError::Handshake(err.to_string()));
+            .map_err(handshake_recv_error);
         match result {
             Ok(Ok((source_name, rate, channels))) => {
                 info!(source = %source_name, rate, "capture started");
@@ -136,6 +148,7 @@ impl Capture {
                         stop,
                         handle: Some(handle),
                         overflow,
+                        lost,
                         source_name,
                         rate,
                         channels,
@@ -158,6 +171,27 @@ impl Capture {
     /// Total PCM samples dropped by the capture ring so far (diagnostics).
     pub fn overflow(&self) -> u64 {
         self.overflow.load(Ordering::Relaxed)
+    }
+
+    /// `true` once the stream has failed *after* a successful startup
+    /// handshake (device unplugged, server died, …). The capture thread
+    /// has exited; the PCM ring simply goes silent. A transient log line
+    /// (`capture lost: …`) accompanies the transition.
+    pub fn lost(&self) -> bool {
+        self.lost.load(Ordering::Acquire) != 0
+    }
+}
+
+/// Classify the handshake-channel wait failure for the error report.
+fn handshake_recv_error(err: std::sync::mpsc::RecvTimeoutError) -> CaptureError {
+    use std::sync::mpsc::RecvTimeoutError;
+    match err {
+        RecvTimeoutError::Timeout => {
+            CaptureError::Handshake("timed out waiting on channel".into())
+        }
+        RecvTimeoutError::Disconnected => {
+            CaptureError::Handshake("capture thread exited before handshake".into())
+        }
     }
 }
 
@@ -182,13 +216,27 @@ fn capture_thread(
     device: Option<String>,
     mut prod: PcmProd,
     overflow: OverflowCounter,
+    lost: LostCounter,
     stop: Arc<AtomicBool>,
-    tx: std::sync::mpsc::Sender<Result<(String, u32, u8), CaptureError>>,
+    tx: std::sync::mpsc::Sender<HandshakeMsg>,
 ) {
-    // Runs the whole lifecycle: setup handshake, then the drain loop until
-    // `stop`; the result (including a graceful stop) goes out via `tx`.
-    let run = capture_thread_run(device, &mut prod, &overflow, &stop);
-    let _ = tx.send(run);
+    // `capture_thread_run` delivers the startup handshake itself, at the
+    // moment the stream reaches Ready (it takes the `Sender` out of
+    // `handshake` while doing so). If the function returns with the
+    // channel still in place, startup failed before the handshake could
+    // go out — deliver the real error so `Capture::start` reports it.
+    let mut handshake = Some(tx);
+    let outcome = capture_thread_run(device, &mut prod, &overflow, &stop, &mut handshake);
+    if let Some(tx) = handshake {
+        debug_assert!(outcome.is_err(), "run ended without sending the handshake");
+        let _ = tx.send(outcome);
+    } else if let Err(err) = outcome {
+        // Late failure (stream/context died mid-drain): the consumer no
+        // longer holds the handshake channel, so surface it via log +
+        // the shared counter (`Capture::lost`).
+        tracing::error!("capture lost: {err}");
+        lost.fetch_add(1, Ordering::Release);
+    }
 }
 
 fn capture_thread_run(
@@ -196,10 +244,31 @@ fn capture_thread_run(
     prod: &mut PcmProd,
     overflow: &OverflowCounter,
     stop: &AtomicBool,
+    handshake: &mut Option<std::sync::mpsc::Sender<HandshakeMsg>>,
 ) -> Result<(String, u32, u8), CaptureError> {
     let Some(mut ml) = Mainloop::new() else {
         return Err(CaptureError::NoContext);
     };
+
+    // Heartbeat timer so every `iterate(true)` below — including the
+    // connect/state waits before the stream exists — observes `stop`
+    // even though `iterate` blocks on no other event traffic. The timer
+    // re-arms itself on every call (periodic tick); kept alive to run
+    // until thread exit. Created before anything connects so that a
+    // stop during startup is honored within ~100 ms, too.
+    let heartbeat_tv = MicroSeconds(STOP_CHECK_PERIOD_US);
+    let _heartbeat = ml
+        .new_timer_event_rt(
+            MonotonicTs::now().checked_add(heartbeat_tv).unwrap_or_else(MonotonicTs::now),
+            Box::new(move |mut ev: pulse::mainloop::events::timer::TimeEventRef<_>| {
+                let next = MonotonicTs::now()
+                    .checked_add(heartbeat_tv)
+                    .unwrap_or_else(MonotonicTs::now);
+                ev.restart_rt(next);
+            }),
+        )
+        .ok_or_else(|| CaptureError::Pulse("alloc timer".into()))?;
+
     let Some(mut ctx) = pulse::context::Context::new(&ml, "neopeek") else {
         return Err(CaptureError::NoContext);
     };
@@ -230,7 +299,7 @@ fn capture_thread_run(
     // Resolve the source: explicit --device, else default sink's monitor.
     let source_name = match device.as_deref() {
         Some(name) => name.to_owned(),
-        None => default_monitor_source(&mut ctx, &mut ml)?,
+        None => default_monitor_source(&mut ctx, &mut ml, stop)?,
     };
 
     let spec = pulse::sample::Spec {
@@ -277,22 +346,6 @@ fn capture_thread_run(
         }
     }
 
-    // Heartbeat timer so the loop below observes `stop` even though
-    // `iterate(true)` blocks on no audio traffic. The timer re-arms itself
-    // on every call (periodic tick); kept alive to run until thread exit.
-    let heartbeat_tv = MicroSeconds(STOP_CHECK_PERIOD_US);
-    let _heartbeat = ml
-        .new_timer_event_rt(
-            MonotonicTs::now().checked_add(heartbeat_tv).unwrap_or_else(MonotonicTs::now),
-            Box::new(move |mut ev: pulse::mainloop::events::timer::TimeEventRef<_>| {
-                let next = MonotonicTs::now()
-                    .checked_add(heartbeat_tv)
-                    .unwrap_or_else(MonotonicTs::now);
-                ev.restart_rt(next);
-            }),
-        )
-        .ok_or_else(|| CaptureError::Pulse("alloc timer".into()))?;
-
     // The server may resample or change the channel count, so the *actual*
     // spec (what `drain_stream` will see on the wire) is queried from the
     // stream once it is Ready — not the requested one. `drain_stream`
@@ -304,14 +357,16 @@ fn capture_thread_run(
     let Some(negotiated) = stream.get_sample_spec() else {
         return Err(CaptureError::Pulse("sample spec unavailable".into()));
     };
-    let negotiated = *negotiated;
-    if negotiated.format != pulse::sample::Format::F32le {
-        return Err(CaptureError::UnsupportedNegotiatedFormat(
-            format!("{:?}", negotiated.format),
-        ));
+    let (rate, channels) = negotiated_spec(*negotiated)?;
+
+    // Handshake goes out NOW — context and stream are Ready and the
+    // negotiated spec is validated — while this same thread continues
+    // into the drain loop below. (Historically the result was sent only
+    // when this function returned, i.e. at shutdown or on error, so
+    // `Capture::start` always timed out on a healthy server.)
+    if let Some(tx) = handshake.take() {
+        let _ = tx.send(Ok((source_name.clone(), rate, channels)));
     }
-    let rate = negotiated.rate;
-    let channels = negotiated.channels;
 
     // Polled drain loop: `iterate(true)` wakes on the record socket (or the
     // heartbeat), then we consume everything locally pending.
@@ -327,6 +382,20 @@ fn capture_thread_run(
     }
 
     Ok((source_name, rate, channels))
+}
+
+/// Validate the negotiated sample spec: `drain_stream` parses the wire
+/// bytes as interleaved little-endian f32, so any other negotiated
+/// format would make those parses misinterpret the bytes and is refused
+/// rather than guessed at. Returns the (rate, channels) to report in
+/// the handshake. Pure so the accept/refuse decision is unit-testable.
+fn negotiated_spec(spec: pulse::sample::Spec) -> Result<(u32, u8), CaptureError> {
+    if spec.format != pulse::sample::Format::F32le {
+        return Err(CaptureError::UnsupportedNegotiatedFormat(
+            format!("{:?}", spec.format),
+        ));
+    }
+    Ok((spec.rate, spec.channels))
 }
 
 fn drain_stream(
@@ -367,6 +436,7 @@ fn drain_stream(
 fn default_monitor_source(
     ctx: &mut pulse::context::Context,
     ml: &mut Mainloop,
+    stop: &AtomicBool,
 ) -> Result<String, CaptureError> {
     let result: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
     let share = result.clone();
@@ -376,6 +446,9 @@ fn default_monitor_source(
         }
     });
     while result.lock().unwrap().is_none() {
+        if stop.load(Ordering::Acquire) {
+            return Err(CaptureError::Handshake("stopped during startup".into()));
+        }
         if ml.iterate(true).is_error() {
             return Err(CaptureError::NoContext);
         }
@@ -453,6 +526,7 @@ pub fn convert_le_f32(bytes: &[u8]) -> Vec<f32> {
 mod tests {
     use super::*;
     use ringbuf::traits::Consumer;
+    use std::time::Instant;
 
     #[test]
     fn convert_roundtrip() {
@@ -480,5 +554,115 @@ mod tests {
         assert_eq!(cons.pop_slice(&mut out), 4);
         assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
         assert_eq!(prod.push_slice(&[5.0, 6.0]), 2);
+    }
+
+    // ---- startup handshake & spec validation ---------------------------
+
+    /// The negotiated spec is accepted when it matches what
+    /// `drain_stream` parses (interleaved LE f32); rate/channels ride
+    /// through as negotiated by the server.
+    #[test]
+    fn negotiated_spec_accepts_f32le() {
+        let spec = pulse::sample::Spec {
+            format: pulse::sample::Format::F32le,
+            rate: 44_100, // server may resample below the requested 48k
+            channels: 2,
+        };
+        assert_eq!(negotiated_spec(spec).unwrap(), (44_100, 2));
+    }
+
+    /// Any non-f32 negotiated format is refused before the handshake, so
+    /// the parse in `drain_stream` can never reinterpret bytes.
+    #[test]
+    fn negotiated_spec_rejects_non_f32() {
+        let spec = pulse::sample::Spec {
+            format: pulse::sample::Format::S16le,
+            rate: 48_000,
+            channels: 2,
+        };
+        assert!(matches!(
+            negotiated_spec(spec),
+            Err(CaptureError::UnsupportedNegotiatedFormat(_))
+        ));
+    }
+
+    /// A capture thread that exits with an error result (e.g. no audio
+    /// server, as in this headless environment) makes `Capture::start`
+    /// return that error and join cleanly — well before the 5 s timeout.
+    /// On a host with a working server the call succeeds instead and
+    /// there is nothing headless to assert here.
+    #[test]
+    fn start_reports_thread_error_promptly() {
+        let started = Instant::now();
+        match Capture::start(None) {
+            Err(_) => assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "startup error arrived after the handshake timeout ({started:?})"
+            ),
+            // A real server appeared: join cleanly, nothing to assert.
+            Ok((capture, _cons)) => drop(capture),
+        }
+    }
+
+    /// A capture thread that panics before the handshake must not wedge
+    /// `Capture::start`: the sender is dropped → the recv sees
+    /// Disconnected (not Timeout), and the panicked handle joins without
+    /// hanging. Exercised through the same channel+join mechanics
+    /// `start` uses, since the real thread needs a pulse server.
+    #[test]
+    fn start_mechanics_joins_panicked_thread() {
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(String, u32, u8), CaptureError>>();
+        let handle = std::thread::Builder::new()
+            .name("test-panic".into())
+            .spawn(move || {
+                drop(tx); // all senders gone → the recv must see Disconnected
+                panic!("simulated capture thread crash");
+            })
+            .unwrap();
+        let started = Instant::now();
+        let err = handshake_recv_error(
+            rx.recv_timeout(Duration::from_secs(1))
+                .expect_err("sender dropped on panic"),
+        );
+        assert!(
+            matches!(&err, CaptureError::Handshake(msg) if msg.contains("exited before handshake")),
+            "unexpected classification: {err:?}"
+        );
+        // join on a panicked handle returns Err; must not hang.
+        assert!(handle.join().is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// Timeout path: when nothing arrives, the wait fails with the
+    /// timeout wording and the stop flag is raised so the thread exits;
+    /// the join must complete promptly (the heartbeat guarantees the
+    /// real thread wakes; here the test thread watches `stop` directly).
+    #[test]
+    fn start_mechanics_timeout_stops_and_joins() {
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(String, u32, u8), CaptureError>>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = stop.clone();
+        let handle = std::thread::Builder::new()
+            .name("test-idle".into())
+            .spawn(move || {
+                // Stand-in for `ml.iterate(true)` on the heartbeat: wake
+                // periodically, honor stop.
+                while !stop_thread.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let _ = tx.send(Err(CaptureError::Handshake("stopped during startup".into())));
+            })
+            .unwrap();
+        let started = Instant::now();
+        let err = handshake_recv_error(
+            rx.recv_timeout(Duration::from_millis(50))
+                .expect_err("nothing sent within 50 ms"),
+        );
+        assert!(
+            matches!(&err, CaptureError::Handshake(msg) if msg.contains("timed out")),
+            "unexpected classification: {err:?}"
+        );
+        self_stop(&stop, handle);
+        assert!(started.elapsed() < Duration::from_secs(2), "join did not complete promptly");
     }
 }
