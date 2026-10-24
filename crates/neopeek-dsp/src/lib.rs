@@ -28,6 +28,38 @@ pub const BINS: usize = FFT_SIZE / 2;
 /// Largest bin count any supported FFT size can produce
 /// (`FFT_SIZES.last()/2 = 8192/2`).
 pub const MAX_BINS: usize = 4096;
+/// Adjustable FFT lengths (power-of-two ladder). The analysis window
+/// stays [`WINDOW_FRAMES`], so larger sizes zero-pad it into more
+/// (interpolated) bins — finer display granularity, **not** more true
+/// resolution; sizes below the window analyze the newest `size` samples
+/// of the window (see [`Engine::process_window`]). Kept to a fixed
+/// ladder so FFT plans stay cheap and the bin math (log positions,
+/// texture width, Hz mapping) has sane anchors.
+pub const FFT_SIZES: [usize; 5] = [512, 1024, 2048, 4096, 8192];
+/// Default FFT length (sndpeek parity: 1024-sample window zero-padded
+/// to 2048).
+pub const DEFAULT_FFT_SIZE: usize = 2048;
+
+/// Whether `fft_size` is one of the supported [`FFT_SIZES`].
+pub fn is_fft_size(fft_size: usize) -> bool {
+    FFT_SIZES.contains(&fft_size)
+}
+
+/// Maps a requested FFT size onto the ladder: valid sizes pass through,
+/// anything else falls back to [`DEFAULT_FFT_SIZE`] (with a warning —
+/// the CLI rejects invalid sizes, so this is a safety net, not a path).
+fn normalize_fft_size(fft_size: usize) -> usize {
+    if is_fft_size(fft_size) {
+        fft_size
+    } else {
+        tracing::warn!(
+            requested = fft_size,
+            ladder = ?FFT_SIZES,
+            "dsp: unsupported FFT size, falling back to the default"
+        );
+        DEFAULT_FFT_SIZE
+    }
+}
 /// Channel count of interleaved input.
 pub const CHANNELS: usize = 2;
 /// Frames per feature moving average (sndpeek `LP`).
@@ -212,10 +244,15 @@ impl MovingAverage {
 
 /// Full analysis engine: owns the FFT plan, window, and smoothing state.
 pub struct Engine {
+    /// Plan cache: rebuilding a plan for a ladder size reuses this
+    /// planner's factorization cache (cheap on repeated `o`/`n` toggles).
+    planner: FftPlanner<f32>,
     hanning: Vec<f32>,
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
     scratch: Vec<Complex<f32>>,
     input: Vec<Complex<f32>>,
+    /// Active FFT length (one of [`FFT_SIZES`]); `input.len() == fft_size`.
+    fft_size: usize,
     /// Fixed-size mono downmix; converted to `[f32; WINDOW_FRAMES]` copies
     /// into `Frame` with no heap traffic on the ~21 ms hot path.
     mono: [f32; WINDOW_FRAMES],
@@ -231,22 +268,19 @@ pub struct Engine {
     smooth_rolloff80: MovingAverage,
 }
 
-impl Default for Engine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Engine {
-    pub fn new() -> Self {
+    pub fn new(fft_size: usize) -> Self {
+        let fft_size = normalize_fft_size(fft_size);
         let mut planner = FftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(FFT_SIZE);
+        let fft = planner.plan_fft_forward(fft_size);
         let scratch = vec![Complex::new(0.0, 0.0); fft.get_inplace_scratch_len()];
         Self {
-            hanning: hanning(WINDOW_FRAMES),
+            planner,
+            hanning: hanning(fft_size.min(WINDOW_FRAMES)),
             fft,
             scratch,
-            input: vec![Complex::new(0.0, 0.0); FFT_SIZE],
+            input: vec![Complex::new(0.0, 0.0); fft_size],
+            fft_size,
             mono: [0.0; WINDOW_FRAMES],
             left: [0.0; WINDOW_FRAMES],
             right: [0.0; WINDOW_FRAMES],
@@ -259,6 +293,48 @@ impl Engine {
             smooth_rolloff50: MovingAverage::default(),
             smooth_rolloff80: MovingAverage::default(),
         }
+    }
+
+    /// The active FFT length (one of [`FFT_SIZES`]).
+    pub fn fft_size(&self) -> usize {
+        self.fft_size
+    }
+
+    /// Valid magnitude-bin count of the frames this engine produces
+    /// (`fft_size / 2`).
+    pub fn bins(&self) -> usize {
+        self.fft_size / 2
+    }
+
+    /// Switches the FFT to a new ladder size: rebuilds the plan (through
+    /// the cached planner), resizes the input/scratch buffers, and
+    /// rebuilds the window for sizes below [`WINDOW_FRAMES`]. A size
+    /// change is a *new spectrum geometry* — the flux continuity
+    /// (`prev_bins`) and the 4-tap feature smoothing restart so features
+    /// are computed strictly within the new bin space; `seq` keeps
+    /// counting. A no-op when the size already matches.
+    pub fn set_fft_size(&mut self, fft_size: usize) {
+        let fft_size = normalize_fft_size(fft_size);
+        if fft_size == self.fft_size {
+            return;
+        }
+        let fft = self.planner.plan_fft_forward(fft_size);
+        self.scratch = vec![Complex::new(0.0, 0.0); fft.get_inplace_scratch_len()];
+        self.input = vec![Complex::new(0.0, 0.0); fft_size];
+        self.fft = fft;
+        self.fft_size = fft_size;
+        self.hanning = hanning(fft_size.min(WINDOW_FRAMES));
+        self.reset_features();
+    }
+
+    /// Clears the feature continuity state (`prev_bins` + moving
+    /// averages) without touching the sequence counter.
+    fn reset_features(&mut self) {
+        self.prev_bins.fill(0.0);
+        self.smooth_centroid.reset();
+        self.smooth_flux.reset();
+        self.smooth_rolloff50.reset();
+        self.smooth_rolloff80.reset();
     }
 
     /// Processes exactly one window of interleaved stereo PCM.
@@ -305,17 +381,26 @@ impl Engine {
         }
         let (rms, peak) = channel_levels(&stored);
 
-        for (n, slot) in self.input[..WINDOW_FRAMES].iter_mut().enumerate() {
-            let mono = self.mono[n] * self.hanning[n];
+        // Windowed input: for fft_size ≥ WINDOW_FRAMES the full 1024-
+        // sample window is loaded and zero-padded (sndpeek's display
+        // path); for fft_size = 512 the window would not fit, so the
+        // FFT analyzes the newest 512 samples of the window (the tail —
+        // the most recent audio) instead. The stored 1024-sample mono /
+        // L / R history is unchanged either way (waveform, Lissajous).
+        let analyze = self.fft_size.min(WINDOW_FRAMES);
+        let skip = WINDOW_FRAMES - analyze;
+        for (n, slot) in self.input[..analyze].iter_mut().enumerate() {
+            let mono = self.mono[skip + n] * self.hanning[n];
             *slot = Complex::new(mono, 0.0); // real signal → zero imaginary
         }
 
-        // Zero the pad region (1024→2048): the FFT runs in place, so
-        // without this each frame would start with the previous frame's
-        // spectrum in bins 1024..2048. That residue compounds across
-        // windows until the complex powers overflow to inf — another way
-        // to freeze centroid/flux at NaN even on a clean capture.
-        self.input[WINDOW_FRAMES..].fill(Complex::ZERO);
+        // Zero the pad region (window → fft_size; empty at fft_size =
+        // 512): the FFT runs in place, so without this each frame would
+        // start with the previous frame's spectrum in the pad bins. That
+        // residue compounds across windows until the complex powers
+        // overflow to inf — another way to freeze centroid/flux at NaN
+        // even on a clean capture.
+        self.input[analyze..].fill(Complex::ZERO);
 
         // rustfft transforms in place with a single scratch buffer.
         self.fft
@@ -367,11 +452,7 @@ impl Engine {
     }
 
     pub fn reset_history(&mut self) {
-        self.prev_bins.fill(0.0);
-        self.smooth_centroid.reset();
-        self.smooth_flux.reset();
-        self.smooth_rolloff50.reset();
-        self.smooth_rolloff80.reset();
+        self.reset_features();
         self.seq = 0;
     }
 }
@@ -416,7 +497,7 @@ mod tests {
     fn sine_sits_in_its_bin() {
         // f such that k = 40: f = 40·48000/2048 = 937.5 Hz
         let f = 40.0 * RATE as f32 / FFT_SIZE as f32;
-        let mut engine = Engine::new();
+        let mut engine = Engine::new(DEFAULT_FFT_SIZE);
         let frame = engine
             .process_window(&sine_interleaved(f, WINDOW_FRAMES))
             .expect("window processed");
@@ -430,7 +511,7 @@ mod tests {
     #[test]
     fn sine_centroid_matches_bin() {
         let f = 100.0 * RATE as f32 / FFT_SIZE as f32;
-        let mut engine = Engine::new();
+        let mut engine = Engine::new(DEFAULT_FFT_SIZE);
         let window = sine_interleaved(f, WINDOW_FRAMES);
         let mut frame = None;
         for _ in 0..4 {
@@ -517,7 +598,7 @@ mod tests {
 
     #[test]
     fn one_inf_sample_yields_finite_frame_and_small_rms() {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new(DEFAULT_FFT_SIZE);
         // Warm the smoothing history with clean frames first.
         for _ in 0..4 {
             let f = engine
@@ -545,7 +626,7 @@ mod tests {
 
     #[test]
     fn one_nan_sample_yields_finite_frame() {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new(DEFAULT_FFT_SIZE);
         for at in [0usize, 1, WINDOW_FRAMES * CHANNELS - 1] {
             let f = engine
                 .process_window(&poisoned_window(f32::NAN, at))
@@ -556,7 +637,7 @@ mod tests {
 
     #[test]
     fn repeated_poisoned_windows_do_not_poison_the_history() {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new(DEFAULT_FFT_SIZE);
         // Alternate clean and hostile windows; frames stay finite and the
         // 4-tap moving averages keep tracking (no NaN ever enters).
         for i in 0..12 {
@@ -589,7 +670,7 @@ mod tests {
 
     #[test]
     fn engine_sequence_counts() {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new(DEFAULT_FFT_SIZE);
         let f = 40.0 * RATE as f32 / FFT_SIZE as f32;
         engine
             .process_window(&sine_interleaved(f, WINDOW_FRAMES))
@@ -629,7 +710,7 @@ mod tests {
     /// downstream max/sum scans never see stale magnitudes.
     #[test]
     fn frame_bins_tail_is_zeroed() {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new(DEFAULT_FFT_SIZE);
         let frame = engine
             .process_window(&sine_interleaved(1000.0, WINDOW_FRAMES))
             .expect("window processed");
@@ -643,7 +724,7 @@ mod tests {
 
     #[test]
     fn engine_keeps_l_and_r_and_flags_mono_like() {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new(DEFAULT_FFT_SIZE);
         // Identical channels (mono monitor style) → mono_like.
         let mono = sine_interleaved(220.0, WINDOW_FRAMES);
         let frame = engine.process_window(&mono).unwrap();
@@ -660,5 +741,139 @@ mod tests {
         assert_eq!(frame.left[100], 0.5);
         assert_eq!(frame.right[100], 0.0);
         assert_eq!(frame.mono[100], 0.25);
+    }
+
+    /// The same sine must land in the same bin index at every ladder
+    /// size — the bin frequency is `k·rate/fft_size`, so the sine is
+    /// tuned per size. Bin-relative feature math (centroid etc.) is
+    /// index-based, which is exactly why it transfers unchanged.
+    #[test]
+    fn sine_sits_in_its_bin_at_every_ladder_size() {
+        for size in FFT_SIZES {
+            let f = 40.0 * RATE as f32 / size as f32;
+            let mut engine = Engine::new(size);
+            assert_eq!(engine.fft_size(), size);
+            assert_eq!(engine.bins(), size / 2);
+            let frame = engine
+                .process_window(&sine_interleaved(f, WINDOW_FRAMES))
+                .expect("window processed");
+            assert_eq!(frame.bin_count, (size / 2) as u32);
+            assert_eq!(argmax(&frame.bins[..frame.bin_count as usize]), 40);
+            let p = frame.bins[40];
+            assert!(frame.bins[20] < 0.05 * p);
+            assert!(frame.bins[100.min(frame.bin_count as usize - 1)] < 0.05 * p);
+        }
+    }
+
+    /// The pad region must be cleared every frame: two identical
+    /// windows in a row must produce identical spectra (without the
+    /// clear, the second frame would start from the first frame's
+    /// transformed pad residue).
+    #[test]
+    fn zero_pad_region_cleared_each_frame() {
+        for size in [512usize, 4096] {
+            let f = 40.0 * RATE as f32 / size as f32;
+            let mut engine = Engine::new(size);
+            let window = sine_interleaved(f, WINDOW_FRAMES);
+            let first = engine.process_window(&window).unwrap();
+            let second = engine.process_window(&window).unwrap();
+            let n = first.bin_count as usize;
+            assert_eq!(n, size / 2);
+            for k in 0..n {
+                assert_eq!(
+                    first.bins[k], second.bins[k],
+                    "bin {k} differs between identical windows at fft {size}"
+                );
+            }
+        }
+    }
+
+    /// A size change is a new geometry: the feature continuity restarts
+    /// (first frame after the switch carries zero flux) and the produced
+    /// bin count follows the new size; features stay finite and
+    /// bin-relative afterwards.
+    #[test]
+    fn set_fft_size_resets_features_and_follows_geometry() {
+        let mut engine = Engine::new(DEFAULT_FFT_SIZE);
+        let warm = sine_interleaved(40.0 * RATE as f32 / 2048.0, WINDOW_FRAMES);
+        for _ in 0..4 {
+            engine.process_window(&warm).unwrap();
+        }
+        engine.set_fft_size(8192);
+        assert_eq!(engine.fft_size(), 8192);
+        let f = 40.0 * RATE as f32 / 8192.0;
+        let frame = engine
+            .process_window(&sine_interleaved(f, WINDOW_FRAMES))
+            .unwrap();
+        assert_eq!(frame.bin_count, 4096);
+        assert_eq!(frame.flux, 0.0, "prev_bins must be reset on a size change");
+        assert_eq!(argmax(&frame.bins[..4096]), 40);
+        assert!(frame.centroid.is_finite());
+        assert!(frame.rolloff50.is_finite() && frame.rolloff80.is_finite());
+        // Back down the ladder: geometry follows again.
+        engine.set_fft_size(512);
+        let frame = engine
+            .process_window(&sine_interleaved(40.0 * RATE as f32 / 512.0, WINDOW_FRAMES))
+            .unwrap();
+        assert_eq!(frame.bin_count, 256);
+        assert_eq!(argmax(&frame.bins[..256]), 40);
+        // Same size twice is a no-op (no feature reset).
+        engine.set_fft_size(512);
+        let frame = engine
+            .process_window(&sine_interleaved(40.0 * RATE as f32 / 512.0, WINDOW_FRAMES))
+            .unwrap();
+        assert!(frame.flux >= 0.0);
+    }
+
+    /// Unsupported sizes never reach the plan: they normalize onto the
+    /// default (CLI validation is the front line; this is the net).
+    #[test]
+    fn unsupported_sizes_fall_back_to_default() {
+        assert_eq!(Engine::new(3000).fft_size(), DEFAULT_FFT_SIZE);
+        assert_eq!(Engine::new(0).fft_size(), DEFAULT_FFT_SIZE);
+        let mut engine = Engine::new(DEFAULT_FFT_SIZE);
+        engine.set_fft_size(1 << 20);
+        assert_eq!(engine.fft_size(), DEFAULT_FFT_SIZE);
+        assert!(is_fft_size(DEFAULT_FFT_SIZE));
+        for size in FFT_SIZES {
+            assert!(is_fft_size(size));
+        }
+        assert!(!is_fft_size(1000));
+    }
+
+    /// At fft 512 the window (1024) overflows the transform: the engine
+    /// must analyze the newest 512 samples of the window. A sine burst
+    /// confined to the window's *first* half must then vanish from the
+    /// spectrum (it is not among the analyzed samples), while one
+    /// confined to the tail stays put.
+    #[test]
+    fn fft_below_window_size_analyzes_the_newest_tail() {
+        let rate = RATE as f32;
+        let mut engine = Engine::new(512);
+        // Head-only burst: 512 samples of a sine in bin 40 (at fft 512),
+        // then 512 silent samples → the analyzed tail is silent.
+        let mut head_burst = vec![0.0f32; WINDOW_FRAMES * CHANNELS];
+        for n in 0..WINDOW_FRAMES / 2 {
+            let s = (std::f32::consts::TAU * 40.0 * rate / 512.0 * n as f32 / rate).sin();
+            head_burst[n * CHANNELS] = s;
+            head_burst[n * CHANNELS + 1] = s;
+        }
+        let frame = engine.process_window(&head_burst).unwrap();
+        let energy: f32 = frame.bins[..256].iter().sum();
+        assert!(energy < 1e-3, "head-only burst must not reach the 512-point FFT, got {energy}");
+
+        // Tail-only burst: silence then the same sine → it must land in
+        // bin 40.
+        let mut tail_burst = vec![0.0f32; WINDOW_FRAMES * CHANNELS];
+        for n in WINDOW_FRAMES / 2..WINDOW_FRAMES {
+            let s = (std::f32::consts::TAU * 40.0 * rate / 512.0 * n as f32 / rate).sin();
+            tail_burst[n * CHANNELS] = s;
+            tail_burst[n * CHANNELS + 1] = s;
+        }
+        let frame = engine.process_window(&tail_burst).unwrap();
+        assert_eq!(argmax(&frame.bins[..256]), 40);
+        // The full mono window (both halves) is still stored untouched.
+        assert_eq!(frame.mono[0], 0.0);
+        assert!(frame.mono[WINDOW_FRAMES - 1].abs() > 0.0);
     }
 }

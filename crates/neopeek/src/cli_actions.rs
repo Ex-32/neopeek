@@ -148,7 +148,7 @@ fn run_fft_capture(
     let mut staging: Vec<f32> = Vec::with_capacity(window_bytes * 8);
     // Scratch buffer reused across pops (no per-iteration allocation).
     let mut tmp = vec![0f32; window_bytes];
-    let mut engine = Engine::new();
+    let mut engine = Engine::new(neopeek_dsp::DEFAULT_FFT_SIZE);
     let mut processed = 0usize;
     let target_slices =
         (seconds * capture.rate as f64 / neopeek_dsp::WINDOW_FRAMES as f64).ceil() as usize;

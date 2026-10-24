@@ -80,7 +80,7 @@ impl Drop for AudioPipeline {
 }
 
 fn dsp_loop(mut pcm: PcmCons, mut prod: FrameProd, stop: Arc<AtomicBool>) {
-    let mut engine = Engine::new();
+    let mut engine = Engine::new(neopeek_dsp::DEFAULT_FFT_SIZE);
     let window_len = WINDOW_FRAMES * CHANNELS;
     let mut window_buf = [0.0f32; WINDOW_FRAMES * CHANNELS];
     let mut tmp = [0.0f32; 1024]; // pop scratch, reused
