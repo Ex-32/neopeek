@@ -356,6 +356,18 @@ impl HudUI {
         }
         self.viewport.update(queue, Resolution { width, height });
 
+        // Right-justify the top-right perf column: anchor it at
+        // `width − margin − widest-line px` (pure math in `hud.rs`,
+        // `perf_panel_x`) so long adapter names don't clip off the right
+        // edge. `self.texts[1]` is the composition the buffers already
+        // display, so this rides the same 4 Hz gate — no per-frame
+        // recomposition, no allocation.
+        let mut perf_lines = ["", "", ""];
+        for (slot, line) in perf_lines.iter_mut().zip(self.texts[1].lines()) {
+            *slot = line;
+        }
+        let perf_left = crate::hud::perf_panel_x(width, scale, self.font_px, perf_lines);
+
         // Layout in physical pixels via the pure `hud_text_anchors`
         // (see hud.rs): feature panel below the meter quads, perf
         // top-right, device stats bottom, keybind hints dim under it
@@ -384,7 +396,7 @@ impl HudUI {
             }),
             Some(TextArea {
                 buffer: &self.buffers[1],
-                left: anchors[1].0,
+                left: perf_left,
                 top: anchors[1].1,
                 scale,
                 bounds: TextBounds::default(),
@@ -462,7 +474,11 @@ fn panel_texts(hud: &HudData) -> [String; 5] {
 }
 
 fn perf_text(hud: &HudData) -> String {
-    format!("{:.0} fps\n{:.1} ms\n{}", hud.fps, hud.frame_ms, hud.adapter)
+    // Top-down order: rendering backend/GPU name, fps, frame latency.
+    // The column is right-justified in `prepare` (`hud.rs::
+    // perf_panel_x`) so an adapter name like "NVIDIA GeForce RTX 3080"
+    // grows leftwards instead of clipping off the right edge.
+    format!("{}\n{:.0} fps\n{:.1} ms", hud.adapter, hud.fps, hud.frame_ms)
 }
 
 /// The TextArea for the keybind-hints panel, or `None` when hints are
@@ -592,6 +608,35 @@ mod tests {
         assert!(glyphs > 10, "shaping produced {glyphs} glyphs, expected more");
     }
 
+    /// Verify [`crate::hud::MONO_ADVANCE_EM`] against the shaped text:
+    /// all perf-panel codepoints are ASCII (latin/digits), so a 25-char
+    /// line at 14 px must measure ≈ 25 · 0.6 · 14 = 210 px wide.
+    #[test]
+    fn perf_panel_advance_matches_shaped_width() {
+        let mut db = cosmic_text::fontdb::Database::new();
+        let data: std::sync::Arc<dyn AsRef<[u8]> + Send + Sync> =
+            std::sync::Arc::new(FONT_JETBRAINS_MONO);
+        db.load_font_source(cosmic_text::fontdb::Source::Binary(data));
+        let mut fs = cosmic_text::FontSystem::new_with_locale_and_db("en-US".to_owned(), db);
+
+        let line = "NVIDIA GeForce RTX 3080";
+        let mut buf = cosmic_text::Buffer::new_empty(cosmic_text::Metrics::new(14.0, 20.0));
+        buf.set_text(
+            line,
+            &cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono")),
+            Shaping::Advanced,
+            None,
+        );
+        buf.shape_until_scroll(&mut fs, false);
+        let run = buf.layout_runs().next().expect("one shaped run");
+        let want = line.len() as f32 * crate::hud::MONO_ADVANCE_EM * 14.0;
+        let shaped = run.line_w;
+        assert!(
+            (shaped - want).abs() < 2.0,
+            "shaped width {shaped:.1} vs 0.6-em assumption {want:.1}"
+        );
+    }
+
     /// The hints TextArea must be OMITTED from the areas list when
     /// hints are hidden (`h`); `hints_area` is that entire decision,
     /// extracted from the device-bound `prepare`.
@@ -647,5 +692,29 @@ mod tests {
         assert!(texts[3].is_empty(), "overlay slot must take the overlay text, got {:?}", texts[3]);
         assert_eq!(texts[4], hints_text(), "hints slot must take the hints text");
         assert!(texts[4].contains("h hints · H hud"));
+    }
+
+    // Perf panel order: backend/GPU name first, fps second, frame
+    // latency third (top-down top-right column); the right-justify
+    // math is tested in hud.rs (`perf_panel_right_justifies_…`).
+    #[test]
+    fn perf_text_orders_adapter_fps_latency() {
+        let s = perf_text(&fixture_hud());
+        assert_eq!(s.lines().collect::<Vec<_>>(), vec!["Vulkan", "60 fps", "16.6 ms"]);
+    }
+
+    /// Right-justify rides the 4 Hz gate: the cached composition fed to
+    /// `perf_panel_x` is exactly the string the perf buffer displays.
+    #[test]
+    fn perf_panel_x_uses_cached_composition_lines() {
+        let texts = panel_texts(&fixture_hud());
+        let mut lines = ["", "", ""];
+        for (slot, line) in lines.iter_mut().zip(texts[1].lines()) {
+            *slot = line;
+        }
+        let x = crate::hud::perf_panel_x(1280, 2.0, 14.0, lines);
+        let right = x
+            + 6.0 * crate::hud::MONO_ADVANCE_EM * 14.0 * 2.0;
+        assert!(right <= 1280.0 && x >= 10.0, "x {x}, right {right}");
     }
 }

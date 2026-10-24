@@ -176,12 +176,35 @@ const BOTTOM_LINE_GAP: f32 = 2.0;
 /// factor, PageUp/PageDown depth).
 pub const HINT_LINES: usize = 3;
 
+/// Advance width of the monospace HUD font, in em. JetBrains Mono is a
+/// 600-unit advance on a 1000-unit em (constant-width digits/latin);
+/// every character the perf panel composes is latin/digits, so line
+/// width in px is `chars · 0.6 · font_px`. Verified by the shaping test
+/// in hud_render's tests (`perf_panel_advance_matches_shaped_width`).
+pub const MONO_ADVANCE_EM: f32 = 0.6;
+
 /// Keybind-hints visibility: the number of hint lines actually rendered.
 /// Hidden hints contribute `0`, which (a) drops the hints TextArea from
 /// the areas list in hud_render and (b) lets the device-stats line
 /// anchor to the true bottom margin (`hud_text_anchors`).
 pub fn hint_lines_for(show_hints: bool) -> usize {
     if show_hints { HINT_LINES } else { 0 }
+}
+
+/// Left pixel of the top-right perf column, right-justified: anchored
+/// so the panel's right edge sits at `width − HUD_MARGIN·scale`. The
+/// font is monospace, so each line's advance in physical px is
+/// `chars · [`MONO_ADVANCE_EM`] · font_px · scale`; the longest line
+/// decides. Clamped at the left margin so degenerate narrow windows
+/// cannot push the panel off-surface.
+pub fn perf_panel_x(width: u32, scale: f32, font_px: f32, lines: [&str; 3]) -> f32 {
+    let max_chars = lines
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0) as f32;
+    let panel_px = max_chars * MONO_ADVANCE_EM * font_px * scale;
+    (width as f32 - HUD_MARGIN * scale - panel_px).max(HUD_MARGIN * scale)
 }
 
 /// Top-left anchor positions of the five HUD text panels, in **physical**
@@ -219,6 +242,9 @@ pub fn hud_text_anchors(
     let device_top = h - (BOTTOM_PAD + hints_h + BOTTOM_LINE_GAP + line_h) * scale;
     let hints_top = h - (BOTTOM_PAD + hints_h) * scale;
     let feature_top = HUD_MARGIN + 2.0 * BAR_GAP + 6.0;
+    // Perf column: `PERF_COL_W` anchors it left of the right edge as a
+    // fallback; hud_render right-justifies the real composition via
+    // [`perf_panel_x`] (see [`MONO_ADVANCE_EM`]).
     [
         (HUD_MARGIN * scale, feature_top * scale),
         // Tiny windows × large scales can push the right-anchored column
@@ -509,6 +535,35 @@ mod tests {
         // test above) — `hud_text_anchors` itself takes 0 both ways.
         assert!(hint_lines_for(true) == HINT_LINES);
         assert_eq!(hint_lines_for(false), 0);
+    }
+
+    /// Right-justify the top-right perf column: the widest realistic
+    /// line ("NVIDIA GeForce RTX 3080", 25 chars) must end exactly at
+    /// the right margin, across all tested sizes/scales.
+    #[test]
+    fn perf_panel_right_justifies_longest_adapter_line() {
+        let lines = ["NVIDIA GeForce RTX 3080", "60 fps", "16.7 ms"];
+        for &w in &[640u32, 800, 1024, 1280, 1920] {
+            for scale in [0.75f32, 1.0, 1.25, 1.5, 2.0] {
+                let x = perf_panel_x(w, scale, FONT_PX, lines);
+                let right = x + (lines[0].chars().count() as f32)
+                    * MONO_ADVANCE_EM * FONT_PX * scale;
+                assert!(right <= w as f32, "perf column clips: right {right} > width {w} @ scale {scale}");
+                assert!((right - (w as f32 - HUD_MARGIN * scale)).abs() < 1e-3,
+                    "right edge must sit at the right margin: {right}");
+                assert!(x >= HUD_MARGIN * scale);
+            }
+        }
+    }
+
+    /// Degenerate narrow windows clamp the perf anchor at the left
+    /// margin instead of underflowing.
+    #[test]
+    fn perf_panel_clamps_for_tiny_windows() {
+        let lines = ["NVIDIA GeForce RTX 3080", "60 fps", "16.7 ms"];
+        assert_eq!(perf_panel_x(200, 2.0, FONT_PX, lines), HUD_MARGIN * 2.0);
+        // Wide window: plain, unclamped math.
+        assert_eq!(perf_panel_x(800, 1.0, FONT_PX, ["a", "b", "c"]), 800.0 - HUD_MARGIN - 1.0 * MONO_ADVANCE_EM * FONT_PX);
     }
 
     #[test]
