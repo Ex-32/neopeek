@@ -13,7 +13,13 @@ pub fn handle_key(settings: &mut ViewSettings, key: &str) -> bool {
         "3" | "w" => settings.toggle_waterfall(),
         // Magnitude / color modes
         "d" => settings.toggle_db(),
+        "S" => settings.toggle_surface(),
         "r" => settings.toggle_rainbow(),
+        // Width of the waveform/Lissajous quads (< / >)
+        "<" => settings.scale_strip_width(false),
+        ">" => settings.scale_strip_width(true),
+        // Pseudo-Lissajous delay (y; Y is the snap-side view)
+        "y" => settings.cycle_liss_delay(),
         // Waterfall layout
         "u" => settings.scale_spacing(true),
         "i" => settings.scale_spacing(false),
@@ -135,6 +141,25 @@ mod tests {
         assert!(!s.hud_on);
         handle_key(&mut s, "H");
         assert!(s.hud_on);
+        // S surface, <> width, y delay.
+        assert!(!s.surface);
+        handle_key(&mut s, "S");
+        assert!(s.surface);
+        handle_key(&mut s, "S");
+        assert!(!s.surface);
+        let w0 = s.strip_width;
+        handle_key(&mut s, ">");
+        assert!(s.strip_width > w0, "width up");
+        // ×0.8 then ×1.25 can round-trip to exactly w0; test down from a
+        // fresh default instead.
+        let mut down = ViewSettings::default();
+        handle_key(&mut down, "<");
+        assert!(down.strip_width < w0, "width down");
+        assert_eq!(s.liss_delay, 512);
+        handle_key(&mut s, "y");
+        assert_eq!(s.liss_delay, 256);
+        handle_key(&mut s, "y");
+        assert_eq!(s.liss_delay, 128);
     }
 
     #[test]

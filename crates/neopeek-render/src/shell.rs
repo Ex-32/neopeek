@@ -57,6 +57,8 @@ pub struct Renderer {
     hud_quads: HudQuads,
     hud_ui: HudUI,
     adapter_name: String,
+    // Theming (M7): last uploaded surface-ramp data (skip identical).
+    ramp_data: Option<Vec<u8>>,
     // frame plumbing (DSP thread side is outside this crate)
     frame_cons: FrameCons,
     /// Newest frame; the waveform/Lissajous strips are built from it.
@@ -142,7 +144,7 @@ impl Renderer {
         let history = History::new(&device);
         let waterfall = Waterfall::new(&device, format, &history.view, wgpu::TextureFormat::Depth24Plus, 1.5);
         // Default view strip colors (sndpeek): waveform blue, lissajous yellow.
-        let strip_verts = WINDOW_FRAMES as u64; // one strip ≤ 1024 verts
+        let strip_verts = (2 * WINDOW_FRAMES) as u64; // quad strips: 2 verts/point
         let waveform = LinePipeline::new(&device, format, wgpu::TextureFormat::Depth24Plus, "waveform", strip_verts);
         let lissajous = LinePipeline::new(&device, format, wgpu::TextureFormat::Depth24Plus, "lissajous", strip_verts);
         let adapter_info = adapter.get_info();
@@ -174,11 +176,12 @@ impl Renderer {
             hud_quads,
             hud_ui,
             adapter_name,
+            ramp_data: None,
             frame_cons,
             latest: None,
             scratch_frames: Vec::with_capacity(FRAME_RING_FRAMES),
-            scratch_wave: Vec::with_capacity(WINDOW_FRAMES),
-            scratch_liss: Vec::with_capacity(WINDOW_FRAMES),
+            scratch_wave: Vec::with_capacity(2 * WINDOW_FRAMES),
+            scratch_liss: Vec::with_capacity(2 * WINDOW_FRAMES),
             last_frame_arrival: None,
             rate: DEFAULT_RATE,
         })
@@ -219,6 +222,17 @@ impl Renderer {
     /// History texture depth (waterfall slices).
     pub fn history_depth(&self) -> usize {
         self.history.texture.height() as usize
+    }
+
+    /// Uploads the theme's surface ramp — only when it differs from the
+    /// last upload. Call on startup and on every theme application (M7/M8).
+    pub fn set_theme_ramp(&mut self, theme: &Theme) {
+        let data = theme.ramp_data();
+        if self.ramp_data.as_deref() == Some(data.as_slice()) {
+            return;
+        }
+        self.waterfall.set_ramp(&self.queue, &data);
+        self.ramp_data = Some(data);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -281,7 +295,8 @@ impl Renderer {
             now_color: theme.waterfall.now_line,
             db_floor: theme.waterfall.db_floor,
             db_ceil: theme.waterfall.db_ceil,
-            pad_end: [0.0; 2],
+            surface: if settings.surface { 1.0 } else { 0.0 },
+            pad_end: [0.0],
         };
         self.waterfall.upload_uniform(&self.queue, &uniforms);
 
@@ -339,7 +354,11 @@ impl Renderer {
             });
 
             if settings.waterfall_on {
-                self.waterfall.draw(&mut pass);
+                if settings.surface {
+                    self.waterfall.draw_surface(&mut pass);
+                } else {
+                    self.waterfall.draw(&mut pass);
+                }
             }
             if settings.waveform_on && self.latest.is_some() {
                 self.waveform.set(&self.queue, &vp, Theme::rgb(&theme.waveform.color));

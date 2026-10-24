@@ -26,11 +26,14 @@ struct WaterUniforms {
     now_color: vec4<f32>,
     db_floor: f32,
     db_ceil: f32,
-    pad_end: vec2<f32>,
+    surface: f32, // 1.0 = filled-surface mode (M8)
+    pad_end: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: WaterUniforms;
 @group(0) @binding(1) var hist: texture_2d<f32>;
+// Filled-surface ramp, 256 samples in a 1-row texture (theme-driven).
+@group(0) @binding(2) var ramp: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -70,6 +73,22 @@ fn vs_main(
     let y = select(y_lin, y_db, u.db > 0.5);
 
     let fval = (depth - s + u.drift) / depth;
+
+    // Filled-surface mode (M8): color from the theme ramp over the linear
+    // height fraction; depth-cued like the line mode.
+    if u.surface > 0.5 {
+        let t = clamp(y_lin, 0.0, 1.0);
+        var c = textureLoad(ramp, vec2<u32>(u32(t * 255.0 + 0.5), 0u), 0).rgb;
+        c = c * fval;
+        if (slice == 0u) {
+            // The arriving plane blends now_line → future (theme).
+            c = mix(u.now_color.rgb, u.future_color.rgb, u.drift);
+        }
+        return VsOut {
+            clip: u.view_proj * vec4<f32>(x, y, z, 1.0),
+            color: c,
+        };
+    }
 
     let past = u.past_color.rgb * fval;
     let rainbow = hue_rgb(0.15 + 0.55 * fval);

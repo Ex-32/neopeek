@@ -111,9 +111,13 @@ impl App {
 
     /// `T`: next theme; re-seeds the theme-owned view knobs.
     pub fn cycle_theme(&mut self) {
-        let next = self.cycler.cycle();
-        tracing::info!(theme = %next.theme.name, "theme cycled");
+        self.cycler.cycle();
         self.apply_theme_knobs();
+        let t = self.theme().clone();
+        tracing::info!(theme = %t.name, "theme cycled");
+        if let Some(r) = self.renderer.as_mut() {
+            r.set_theme_ramp(&t);
+        }
     }
 
     /// Rainbow default + Lissajous scale are theme-owned; re-applied on
@@ -155,6 +159,7 @@ impl ApplicationHandler for App {
         let (frame_prod, frame_cons) = Renderer::frame_pair();
         match Renderer::new(window.clone(), frame_cons) {
             Ok(mut renderer) => {
+                renderer.set_theme_ramp(self.theme());
                 match AudioPipeline::start(self.device.take(), frame_prod) {
                     Ok(audio) => {
                         renderer.set_rate(audio.rate());
@@ -344,6 +349,10 @@ impl ApplicationHandler for App {
             if let Some(theme) = w.try_latest() {
                 tracing::info!(theme = %theme.name, "theme reloaded");
                 self.cycler.reload(path, theme);
+                let t = self.theme().clone();
+                if let Some(r) = self.renderer.as_mut() {
+                    r.set_theme_ramp(&t);
+                }
             }
         }
         self.request_redraw();

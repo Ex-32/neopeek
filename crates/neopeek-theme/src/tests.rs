@@ -112,6 +112,28 @@ fn tmp_ron(content: &str) -> PathBuf {
 }
 
 #[test]
+fn ramp_interpolates_and_sorts() {
+    use crate::{parse_hex, ramp_to_rgba8, RampStop};
+    let stops = |v: &[(f32, &str)]| -> Vec<RampStop> {
+        v.iter()
+            .map(|&(pos, c)| RampStop { pos, color: parse_hex(c).unwrap() })
+            .collect()
+    };
+    // Two stops: black → white; the middle sample is gray.
+    let ramp = ramp_to_rgba8(&stops(&[(0.0, "#000000"), (1.0, "#ffffff")]), 3);
+    assert_eq!(&ramp[0..4], &[0, 0, 0, 255]);
+    assert_eq!(&ramp[4..8], &[128, 128, 128, 255]);
+    assert_eq!(&ramp[8..12], &[255, 255, 255, 255]);
+    // Unsorted input sorts; clamps beyond the ends.
+    let ramp = ramp_to_rgba8(&stops(&[(1.0, "#ff0000"), (0.0, "#00ff00")]), 2);
+    assert_eq!(&ramp[0..4], &[0, 255, 0, 255]);
+    assert_eq!(&ramp[4..8], &[255, 0, 0, 255]);
+    // Single stop: constant ramp.
+    let ramp = ramp_to_rgba8(&stops(&[(0.5, "#123456")]), 4);
+    assert!(ramp.chunks(4).all(|c| c == [0x12, 0x34, 0x56, 255]));
+}
+
+#[test]
 fn resolve_missing_and_malformed_fall_back_to_ember() {
     // No arg → Ember, no warning.
     let (l, warn) = resolve(None);

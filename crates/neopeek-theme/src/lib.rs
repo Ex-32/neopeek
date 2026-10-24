@@ -165,6 +165,59 @@ impl Theme {
             (c[2] * 255.0).round() as u8,
         )
     }
+
+    /// The filled-surface ramp stops, falling back to `past → future`
+    /// when the theme defines none.
+    pub fn surface_ramp_stops(&self) -> Vec<RampStop> {
+        if !self.waterfall.surface_ramp.is_empty() {
+            self.waterfall.surface_ramp.clone()
+        } else {
+            vec![
+                RampStop { pos: 0.0, color: self.waterfall.past },
+                RampStop { pos: 1.0, color: self.waterfall.future },
+            ]
+        }
+    }
+
+    /// Ready-to-upload RGBA8 ramp data (256 samples) for the surface
+    /// pipeline (M8).
+    pub fn ramp_data(&self) -> Vec<u8> {
+        ramp_to_rgba8(&self.surface_ramp_stops(), 256)
+    }
+}
+
+/// Builds the filled-surface 1D ramp as RGBA8 bytes (`width` samples),
+/// interpolating stops by `pos` (sorted internally; ends clamped).
+/// The render crate uploads this into a 1D-ish texture (M8).
+pub fn ramp_to_rgba8(stops: &[RampStop], width: usize) -> Vec<u8> {
+    assert!(width >= 2, "ramp needs at least 2 samples");
+    let mut stops: Vec<RampStop> = stops.to_vec();
+    stops.sort_by(|a, b| a.pos.partial_cmp(&b.pos).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out = Vec::with_capacity(width * 4);
+    if stops.len() == 1 {
+        // Constant ramp.
+        let c: [u8; 4] = stops[0].color.map(|v| (v * 255.0).round() as u8);
+        for _ in 0..width {
+            out.extend_from_slice(&c);
+        }
+        return out;
+    }
+    for i in 0..width {
+        let t = i as f32 / (width - 1) as f32;
+        // Segment containing t.
+        let seg = match stops.binary_search_by(|s| s.pos.partial_cmp(&t).unwrap()) {
+            Ok(_) | Err(0) => 0, // exact hit or before first → first stop
+            Err(e) => (e - 1).min(stops.len() - 2),
+        };
+        let (a, b) = (&stops[seg], &stops[seg + 1.min(stops.len() - 1)]);
+        let span = (b.pos - a.pos).max(f32::EPSILON);
+        let f = ((t - a.pos) / span).clamp(0.0, 1.0);
+        for c in 0..4 {
+            let v = a.color[c] + (b.color[c] - a.color[c]) * f;
+            out.push((v * 255.0).round() as u8);
+        }
+    }
+    out
 }
 
 pub const EMBER_RON: &str = include_str!("../assets/themes/Ember.ron");

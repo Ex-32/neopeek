@@ -25,6 +25,8 @@ pub struct ViewSettings {
     pub waterfall_on: bool,
     /// `d`: dB magnitude mode instead of linear.
     pub db: bool,
+    /// `S`: filled-surface waterfall mode (theme `surface_ramp` colors).
+    pub surface: bool,
     /// `r`: rainbow depth colors instead of the green depth-dim look.
     pub rainbow: bool,
     /// `f`/`z`: stop ingesting frames, keep rendering.
@@ -46,6 +48,12 @@ pub struct ViewSettings {
     pub wave_scale: f32,
     /// `l`/`L`: Lissajous scale (default 0.45).
     pub liss_scale: f32,
+    /// `<`/`>`: strip width (waveform/Lissajous quads, world units).
+    /// Default ≈ the old 1-px hairline at the default vantage.
+    pub strip_width: f32,
+    /// `y`: pseudo-Lissajous delay in samples (mono-ish sources only);
+    /// cycles 512 → 256 → 128 → 64 → 512. `Y` stays the snap-side view.
+    pub liss_delay: usize,
 }
 
 impl Default for ViewSettings {
@@ -55,6 +63,7 @@ impl Default for ViewSettings {
             lissajous_on: true,
             waterfall_on: true,
             db: false,
+            surface: false,
             rainbow: false,
             frozen: false,
             muted: false,
@@ -66,6 +75,8 @@ impl Default for ViewSettings {
             freq_scale: 1.0,
             wave_scale: 1.0,
             liss_scale: LISS_SCALE,
+            strip_width: 0.004,
+            liss_delay: LISS_DELAY,
         }
     }
 }
@@ -101,6 +112,20 @@ impl ViewSettings {
             .clamp(0.0, 4.0);
     }
 
+    /// `<`/`>`: waveform/Lissajous strip width ×1.25 / ×0.8, clamped.
+    pub fn scale_strip_width(&mut self, up: bool) {
+        self.strip_width = (self.strip_width * if up { 1.25 } else { 0.8 })
+            .clamp(0.001, 0.1);
+    }
+
+    /// `y`: pseudo-Lissajous delay halves (512→256→128→64→512).
+    pub fn cycle_liss_delay(&mut self) {
+        self.liss_delay = match self.liss_delay {
+            d if d <= 64 => WINDOW_FRAMES / 2,
+            d => d / 2,
+        };
+    }
+
     pub fn toggle_waveform(&mut self) {
         self.waveform_on = !self.waveform_on;
     }
@@ -112,6 +137,10 @@ impl ViewSettings {
     }
     pub fn toggle_db(&mut self) {
         self.db = !self.db;
+    }
+    /// `S`: filled-surface mode toggle.
+    pub fn toggle_surface(&mut self) {
+        self.surface = !self.surface;
     }
     pub fn toggle_rainbow(&mut self) {
         self.rainbow = !self.rainbow;
@@ -134,8 +163,9 @@ impl ViewSettings {
     }
 }
 
-/// Line vertices are world-space 3D positions (12 bytes); runs of them
-/// fill one draw as a `LineStrip`/indexed strip.
+/// Line vertices are world-space 3D positions (12 bytes); a strip is
+/// drawn as a triangle strip with 2 verts per point (M8: width-expanded
+/// quads replacing the 1-px GL lines).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LineVertex {
@@ -144,11 +174,25 @@ pub struct LineVertex {
 
 /// Append the mono waveform strip: x ∈ −1.8…1.8 across the window at
 /// y = 0.7, vertically scaled `wave_scale · 2` (sndpeek display mapping).
+/// Expanded perpendicular to the local tangent by `strip_width`.
 pub fn append_waveform(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVertex>) {
+    let hw = s.strip_width * 0.5;
+    // Local tangents need neighbors; x is monotonic so tx never vanishes.
+    let point = |i: usize| {
+        (
+            -WAVE_SPAN + 2.0 * WAVE_SPAN * (i as f32 / (WINDOW_FRAMES - 1) as f32),
+            WAVE_Y + s.wave_scale * 2.0 * frame.mono[i],
+        )
+    };
     for i in 0..WINDOW_FRAMES {
-        let x = -WAVE_SPAN + 2.0 * WAVE_SPAN * (i as f32 / (WINDOW_FRAMES - 1) as f32);
-        let y = WAVE_Y + s.wave_scale * 2.0 * frame.mono[i];
-        out.push(LineVertex { pos: [x, y, 0.0] });
+        let (x, y) = point(i);
+        let (xp, yp) = point(i.saturating_sub(1));
+        let (xn, yn) = point((i + 1).min(WINDOW_FRAMES - 1));
+        let (tx, ty) = (xn - xp, yn - yp);
+        let len = (tx * tx + ty * ty).sqrt().max(1e-9);
+        let (nx, ny) = (-ty / len, tx / len);
+        out.push(LineVertex { pos: [x + nx * hw, y + ny * hw, 0.0] });
+        out.push(LineVertex { pos: [x - nx * hw, y - ny * hw, 0.0] });
     }
 }
 
@@ -156,20 +200,32 @@ pub fn append_waveform(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVertex
 /// - true stereo: figure-X = L, figure-Y = R (figure-Y maps to world y,
 ///   figure-X maps to world z, toward the camera for positive L);
 /// - mono-ish source (`Frame::mono_like`): pseudo-Lissajous, mono vs its
-///   512-sample delayed copy.
+///   `liss_delay`-sample delayed copy (`y` cycles the delay; `Y` is the
+///   snap-side camera view, not this).
+///
+/// Closed figure → wrapped tangents; expanded by `strip_width`.
 pub fn append_lissajous(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVertex>) {
-    for i in 0..WINDOW_FRAMES {
+    let hw = s.strip_width * 0.5;
+    let point = |i: usize| {
         let (u, v) = if frame.mono_like {
             (
                 frame.mono[i],
-                frame.mono[(i + LISS_DELAY) % WINDOW_FRAMES],
+                frame.mono[(i + s.liss_delay) % WINDOW_FRAMES],
             )
         } else {
             (frame.left[i], frame.right[i])
         };
-        out.push(LineVertex {
-            pos: [LISS_X, s.liss_scale * v, s.liss_scale * u],
-        });
+        (s.liss_scale * u, s.liss_scale * v) // (z, y) in-world
+    };
+    for i in 0..WINDOW_FRAMES {
+        let (zu, yv) = point(i);
+        let (zp, yp) = point((i + WINDOW_FRAMES - 1) % WINDOW_FRAMES);
+        let (zn, yn) = point((i + 1) % WINDOW_FRAMES);
+        let (tz, ty) = (zn - zp, yn - yp);
+        let len = (tz * tz + ty * ty).sqrt().max(1e-9);
+        let (nz, ny) = (-ty / len, tz / len);
+        out.push(LineVertex { pos: [LISS_X, yv + ny * hw, zu + nz * hw] });
+        out.push(LineVertex { pos: [LISS_X, yv - ny * hw, zu - nz * hw] });
     }
 }
 
@@ -196,12 +252,28 @@ mod tests {
         let s = ViewSettings::default();
         let mut out = Vec::new();
         append_waveform(&f, &s, &mut out);
-        assert_eq!(out.len(), WINDOW_FRAMES);
-        approx(out[0].pos[0], -WAVE_SPAN);
-        approx(out[WINDOW_FRAMES - 1].pos[0], WAVE_SPAN);
-        approx(out[0].pos[1], WAVE_Y + 2.0); // 1.0 · gain·scale·2
-        approx(out[WINDOW_FRAMES - 1].pos[1], WAVE_Y - 1.0);
+        // 2 verts per point (quad strip expansion).
+        assert_eq!(out.len(), 2 * WINDOW_FRAMES);
+        // First point: +normal then −normal around y = WAVE_Y + 2.
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, -WAVE_SPAN);
         approx(out[0].pos[2], 0.0);
+        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, WAVE_Y + 2.0);
+        // The pair is strip_width apart, perpendicular to the tangent
+        // (here near-vertical tangent → near-horizontal spread).
+        let dx = out[0].pos[0] - out[1].pos[0];
+        let dy = out[0].pos[1] - out[1].pos[1];
+        approx((dx * dx + dy * dy).sqrt(), s.strip_width);
+        // Last point: centered at y = WAVE_Y − 1.
+        let n = 2 * (WINDOW_FRAMES - 1);
+        approx((out[n].pos[1] + out[n + 1].pos[1]) / 2.0, WAVE_Y - 1.0);
+        approx((out[n].pos[0] + out[n + 1].pos[0]) / 2.0, WAVE_SPAN);
+        // Flat line (all zeros): perpendicular expansion is vertical.
+        let f2 = Frame::default();
+        out.clear();
+        append_waveform(&f2, &s, &mut out);
+        for v in &out {
+            approx(v.pos[1], WAVE_Y + if v.pos[1] >= WAVE_Y { s.strip_width / 2.0 } else { -s.strip_width / 2.0 });
+        }
         // scale setting flows through
         let mut s2 = ViewSettings::default();
         for _ in 0..10 {
@@ -210,6 +282,39 @@ mod tests {
         out.clear();
         append_waveform(&f, &s2, &mut out);
         assert!(out[0].pos[1] > WAVE_Y + 2.0, "scale up grows y");
+    }
+
+    #[test]
+    fn strip_width_key_steps_and_clamps() {
+        let mut s = ViewSettings::default();
+        for _ in 0..100 {
+            s.scale_strip_width(true);
+        }
+        assert_eq!(s.strip_width, 0.1);
+        for _ in 0..200 {
+            s.scale_strip_width(false);
+        }
+        assert_eq!(s.strip_width, 0.001);
+    }
+
+    #[test]
+    fn liss_delay_cycles_halves_and_wraps() {
+        let mut s = ViewSettings::default();
+        assert_eq!(s.liss_delay, WINDOW_FRAMES / 2);
+        s.cycle_liss_delay();
+        assert_eq!(s.liss_delay, 256);
+        s.cycle_liss_delay();
+        assert_eq!(s.liss_delay, 128);
+        s.cycle_liss_delay();
+        assert_eq!(s.liss_delay, 64);
+        s.cycle_liss_delay();
+        assert_eq!(s.liss_delay, WINDOW_FRAMES / 2, "wraps back to 512");
+        // From a weird value it just halves down to 64.
+        s.liss_delay = 300;
+        s.cycle_liss_delay();
+        assert_eq!(s.liss_delay, 150);
+        s.cycle_liss_delay();
+        assert_eq!(s.liss_delay, 75);
     }
 
     #[test]
@@ -224,17 +329,28 @@ mod tests {
         let s = ViewSettings::default();
         let mut out = Vec::new();
         append_lissajous(&f, &s, &mut out);
-        assert_eq!(out.len(), WINDOW_FRAMES);
+        assert_eq!(out.len(), 2 * WINDOW_FRAMES);
+        // Quad pair is centered on the figure point: (y,z) mean.
         approx(out[0].pos[0], LISS_X); // plane constant
-        approx(out[0].pos[1], LISS_SCALE * f.right[0]); // figure-Y = R
-        approx(out[0].pos[2], LISS_SCALE * f.left[0]); // figure-X = L
+        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, LISS_SCALE * f.right[0]); // figure-Y = R
+        approx((out[0].pos[2] + out[1].pos[2]) / 2.0, LISS_SCALE * f.left[0]); // figure-X = L
         // pseudo: mono vs delayed copy (same y for all slices in delta 0)
         f.mono_like = true;
         out.clear();
         append_lissajous(&f, &s, &mut out);
         // pseudo: figure-Y = mono[(i+delay)], figure-X = mono[i]
-        approx(out[0].pos[1], LISS_SCALE * f.mono[LISS_DELAY]);
-        approx(out[0].pos[2], LISS_SCALE * f.mono[0]);
+        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, LISS_SCALE * f.mono[LISS_DELAY]);
+        approx((out[0].pos[2] + out[1].pos[2]) / 2.0, LISS_SCALE * f.mono[0]);
+        // A different delay flows through (`y` cycle state).
+        let mut s2 = ViewSettings::default();
+        s2.cycle_liss_delay(); // delay = 256
+        out.clear();
+        append_lissajous(&f, &s2, &mut out);
+        approx((out[0].pos[2] + out[1].pos[2]) / 2.0, LISS_SCALE * f.mono[0]);
+        approx(
+            (out[0].pos[1] + out[1].pos[1]) / 2.0,
+            LISS_SCALE * f.mono[256],
+        );
     }
 
     #[test]

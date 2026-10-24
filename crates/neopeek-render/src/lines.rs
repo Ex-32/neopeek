@@ -82,7 +82,8 @@ impl LinePipeline {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineStrip,
+                // M8: width-expanded quad strips (2 verts per point).
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -136,7 +137,8 @@ impl LinePipeline {
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&u));
     }
 
-    /// Uploads `verts` and draws them as one line strip.
+    /// Uploads `verts` and draws them as one triangle-strip quad run
+    /// (2 verts per polyline point — see `views::append_waveform`).
     pub fn draw_strip<'pass>(
         &self,
         pass: &mut wgpu::RenderPass<'pass>,

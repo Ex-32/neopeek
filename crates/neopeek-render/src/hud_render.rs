@@ -381,7 +381,7 @@ fn device_panel(ui: &mut HudUI, hud: &HudData) {
 fn hints_panel(ui: &mut HudUI) {
     let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
     ui.buffers[4].set_text(
-        "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · 1 wave · 2 liss · 3 waterfall · d dB · r rainbow · u i spacing · j k z-offset · l L liss · f freeze · m mute · h hints · H hud · T theme · F X Y Z snap · p print · q quit",
+        "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · 1 wave · 2 liss · 3 waterfall · S surface · d dB · r rainbow · u i spacing · j k z-offset · l L liss · < > width · y liss-delay · f freeze · m mute · h hints · H hud · T theme · F X Y Z snap · p print · q quit",
         &attrs,
         Shaping::Advanced,
         None,

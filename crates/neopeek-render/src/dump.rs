@@ -10,25 +10,33 @@ pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
     let flag = |on: bool| if on { "on" } else { "off" };
     format!(
         "neopeek settings\n\
-         waterfall: {}, waveform: {}, lissajous: {}\n\
-         magnitude: {}, rainbow: {}, frozen: {}\n\
+         waterfall: {}, surface: {}, waveform: {}, lissajous: {}\n\
+         magnitude: {}, rainbow: {}, frozen: {}, muted: {}\n\
          spacing: {:.4}, z_offset: {:+.3}, log_factor: {:.3}\n\
          freq_scale: {:.3}, wave_scale: {:.3}, liss_scale: {:.3}\n\
+         strip_width: {:.4}, liss_delay: {}\n\
+         hud: {}, keybinds: {}\n\
          camera.target = ({:.3}, {:.3}, {:.3})\n\
          camera.azimuth = {:.3} rad, elevation = {:.3} rad, distance = {:.3}\n\
          camera.fov = {:.1}°, near = {:.3}, far = {:.1}, aspect = {:.3}",
         flag(settings.waterfall_on),
+        flag(settings.surface),
         flag(settings.waveform_on),
         flag(settings.lissajous_on),
         if settings.db { "dB" } else { "linear" },
         flag(settings.rainbow),
         flag(settings.frozen),
+        flag(settings.muted),
         settings.spacing,
         settings.z_offset,
         settings.log_factor,
         settings.freq_scale,
         settings.wave_scale,
         settings.liss_scale,
+        settings.strip_width,
+        settings.liss_delay,
+        flag(settings.hud_on),
+        flag(settings.show_hints),
         camera.target[0],
         camera.target[1],
         camera.target[2],
@@ -53,10 +61,15 @@ mod tests {
         let txt = settings_string(&s, &c);
         for needle in [
             "waterfall: on",
+            "surface: off",
             "magnitude: linear",
+            "muted: off",
             "log_factor: 1.500",
             "spacing: 0.1200",
             "liss_scale: 0.450",
+            "strip_width: 0.0040",
+            "liss_delay: 512",
+            "hud: on",
             "camera.azimuth",
             "distance = 3.500",
             "fov = 45.0°",

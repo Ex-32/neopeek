@@ -105,6 +105,23 @@ pub fn grid_indices() -> Vec<u32> {
     out
 }
 
+/// Filled-surface mode (M8): the same grid drawn as triangles — one quad
+/// (2 triangles, 6 indices) per (slice, bin segment) between adjacent
+/// slices, wound so both faces render (front-face agnostic camera).
+pub fn surface_indices() -> Vec<u32> {
+    let mut out = Vec::with_capacity((DEPTH - 1) * SLICE_SEGMENTS * 6);
+    for slice in 0..DEPTH - 1 {
+        let a = (slice * BINS) as u32;
+        let b = ((slice + 1) * BINS) as u32;
+        for k in 0..SLICE_SEGMENTS as u32 {
+            // Quad (a[k], a[k+1], b[k+1], b[k]) as two triangles.
+            out.extend_from_slice(&[a + k, a + k + 1, b + k + 1]);
+            out.extend_from_slice(&[a + k, b + k + 1, b + k]);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +181,23 @@ mod tests {
         let s1 = (BINS - 1) * 2;
         assert_eq!(idx[s1], BINS as u32);
         assert_eq!(idx[s1 + 1], BINS as u32 + 1);
+    }
+
+    #[test]
+    fn surface_indices_tile_the_grid() {
+        let idx = surface_indices();
+        assert_eq!(idx.len(), (DEPTH - 1) * (BINS - 1) * 6);
+        // First quad: slice 0/1, bins 0/1 → triangle 1 = (0, 1, BINS+1),
+        // triangle 2 = (0, BINS+1, BINS).
+        assert_eq!(idx[0], 0);
+        assert_eq!(idx[1], 1);
+        assert_eq!(idx[2], BINS as u32 + 1);
+        assert_eq!(idx[3], 0);
+        assert_eq!(idx[4], BINS as u32 + 1);
+        assert_eq!(idx[5], BINS as u32);
+        // Every index within the grid; slices adjacent.
+        let max = idx.iter().copied().max().unwrap();
+        assert_eq!(max, (DEPTH * BINS - 1) as u32);
     }
 
     #[test]

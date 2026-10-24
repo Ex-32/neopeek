@@ -31,8 +31,10 @@ pub struct WaterUniforms {
     /// dB magnitude mapping window (Ember matches the M4 formula).
     pub db_floor: f32,
     pub db_ceil: f32,
+    /// 1.0 = filled-surface mode (`S`, M8).
+    pub surface: f32,
     /// Brings the block to 176 bytes = WGSL struct size (align 16).
-    pub pad_end: [f32; 2],
+    pub pad_end: [f32; 1],
 }
 
 impl WaterUniforms {
@@ -54,7 +56,8 @@ impl WaterUniforms {
             now_color: [0.4, 1.0, 1.0, 1.0],
             db_floor: -80.0,
             db_ceil: 0.0,
-            pad_end: [0.0; 2],
+            surface: 0.0,
+            pad_end: [0.0],
         }
     }
 }
@@ -68,6 +71,12 @@ pub struct Waterfall {
     index_count: u32,
     /// Grid rebuilds when this differs from the incoming `log_factor`.
     grid_log_factor: f32,
+    /// Filled-surface mode (M8): triangle topology over the same grid.
+    surface_pipeline: wgpu::RenderPipeline,
+    surface_ib: wgpu::Buffer,
+    surface_index_count: u32,
+    /// 1×256 RGBA8 ramp texture (theme-driven).
+    ramp: wgpu::Texture,
 }
 
 impl Waterfall {
@@ -106,6 +115,18 @@ impl Waterfall {
                     },
                     count: None,
                 },
+                // Filled-surface ramp (M8): 1D ramp stored as a 1-row
+                // texture, loaded (not sampled — vertex stage) in the shader.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -132,7 +153,7 @@ impl Waterfall {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Some(vb_layout)],
+                buffers: &[Some(vb_layout.clone())],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -165,6 +186,29 @@ impl Waterfall {
         // log-factor change (`set_log_factor`).
         let (vb, ib, index_count) = create_grid_buffers(device, log_factor);
 
+        // Filled-surface mode (M8): same VB, triangle index buffer.
+        let surface_index_list = grid::surface_indices();
+        let surface_index_count = surface_index_list.len() as u32;
+        let surface_ib = create_buffer_from(
+            device,
+            "neopeek-waterfall-surface-indices",
+            bytemuck::cast_slice(&surface_index_list),
+            wgpu::BufferUsages::INDEX,
+        );
+        // 1D ramp texture: 256×1 RGBA8; contents come from the theme via
+        // `set_ramp` (rebuilt on every theme application).
+        let ramp = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("neopeek-waterfall-ramp"),
+            size: wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let ramp_view = ramp.create_view(&wgpu::TextureViewDescriptor::default());
+
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("neopeek-waterfall-uniforms"),
             size: std::mem::size_of::<WaterUniforms>() as u64,
@@ -184,7 +228,47 @@ impl Waterfall {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(history_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&ramp_view),
+                },
             ],
+        });
+
+        // The filled-surface variant differs only in topology.
+        let surface_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("neopeek-waterfall-surface"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[Some(vb_layout.clone())],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: depth_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
         });
 
         Self {
@@ -195,7 +279,32 @@ impl Waterfall {
             bind_group,
             index_count,
             grid_log_factor: log_factor,
+            surface_pipeline,
+            surface_ib,
+            surface_index_count,
+            ramp,
         }
+    }
+
+    /// Uploads a theme's surface ramp (RGBA8, 256 samples) — called when
+    /// the theme changes. `neopeek_theme::ramp_to_rgba8` produces the data.
+    pub fn set_ramp(&self, queue: &wgpu::Queue, data: &[u8]) {
+        debug_assert_eq!(data.len(), 256 * 4);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.ramp,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256 * 4),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
+        );
     }
 
     /// Re-upload the grid vertices when the log factor changed. Indices
@@ -221,6 +330,15 @@ impl Waterfall {
         pass.set_index_buffer(self.ib.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..self.index_count, 0, 0..1);
     }
+
+    /// Filled-surface variant (`S`, M8): same bind group/grid, triangles.
+    pub fn draw_surface<'pass>(&'pass self, pass: &mut wgpu::RenderPass<'pass>) {
+        pass.set_pipeline(&self.surface_pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_vertex_buffer(0, self.vb.slice(..));
+        pass.set_index_buffer(self.surface_ib.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.surface_index_count, 0, 0..1);
+    }
 }
 
 fn create_grid_buffers(
@@ -233,25 +351,37 @@ fn create_grid_buffers(
     let vert_bytes: &[u8] = bytemuck::cast_slice(&verts);
     let index_bytes: &[u8] = bytemuck::cast_slice(&indices);
 
-    let vb = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("neopeek-waterfall-grid"),
-        size: vert_bytes.len() as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: true,
-    });
-    vb.slice(..).get_mapped_range_mut().unwrap().copy_from_slice(vert_bytes);
-    vb.unmap();
-
-    let ib = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("neopeek-waterfall-indices"),
-        size: index_bytes.len() as u64,
-        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: true,
-    });
-    ib.slice(..).get_mapped_range_mut().unwrap().copy_from_slice(index_bytes);
-    ib.unmap();
+    let vb = create_buffer_from(
+        device,
+        "neopeek-waterfall-grid",
+        vert_bytes,
+        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    );
+    let ib = create_buffer_from(
+        device,
+        "neopeek-waterfall-indices",
+        index_bytes,
+        wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+    );
 
     (vb, ib, index_count)
+}
+
+fn create_buffer_from(
+    device: &wgpu::Device,
+    label: &str,
+    bytes: &[u8],
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: bytes.len() as u64,
+        usage,
+        mapped_at_creation: true,
+    });
+    buf.slice(..).get_mapped_range_mut().unwrap().copy_from_slice(bytes);
+    buf.unmap();
+    buf
 }
 
 #[cfg(test)]
@@ -269,5 +399,6 @@ mod tests {
             "colors start after 11 vec4 slots (mat4 + 4 scalars + pad)"
         );
         assert_eq!(std::mem::offset_of!(WaterUniforms, db_floor), 160);
+        assert_eq!(std::mem::offset_of!(WaterUniforms, surface), 168);
     }
 }

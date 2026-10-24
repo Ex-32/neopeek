@@ -2,7 +2,7 @@
 //!
 //! One `write_texture` of the newest magnitude row (~4 KB) per slice; the
 //! ring wrap is resolved at *sample* time from a uniform head index
-//! (`grid::history_row`), so no CPU row shifting every happens. The
+//! (`grid::history_row`), so no CPU row shifting ever happens. The
 //! texture itself is allocated once.
 
 use neopeek_dsp::{BINS, Frame};
