@@ -63,6 +63,8 @@ pub enum CaptureError {
     NotReady,
     #[error("handshake with capture thread failed: {0}")]
     Handshake(String),
+    #[error("server negotiated non-f32 format ({0}); interleaved f32 parsing would be invalid")]
+    UnsupportedNegotiatedFormat(String),
 }
 
 impl From<pulse::error::PAErr> for CaptureError {
@@ -291,12 +293,28 @@ fn capture_thread_run(
         )
         .ok_or_else(|| CaptureError::Pulse("alloc timer".into()))?;
 
-    let rate = REQUESTED_RATE;
-    let channels = CHANNELS as u8;
+    // The server may resample or change the channel count, so the *actual*
+    // spec (what `drain_stream` will see on the wire) is queried from the
+    // stream once it is Ready — not the requested one. `drain_stream`
+    // assumes interleaved little-endian f32, which the request pins via
+    // `Format::F32le`; any other negotiated format would make those parses
+    // misinterpret the bytes, so it is refused rather than guessed at.
+    // (Rare in practice: the server serves the requested format whenever
+    // the source permits it, so the refusal is a safety net.)
+    let Some(negotiated) = stream.get_sample_spec() else {
+        return Err(CaptureError::Pulse("sample spec unavailable".into()));
+    };
+    let negotiated = *negotiated;
+    if negotiated.format != pulse::sample::Format::F32le {
+        return Err(CaptureError::UnsupportedNegotiatedFormat(
+            format!("{:?}", negotiated.format),
+        ));
+    }
+    let rate = negotiated.rate;
+    let channels = negotiated.channels;
 
     // Polled drain loop: `iterate(true)` wakes on the record socket (or the
     // heartbeat), then we consume everything locally pending.
-    let mut scratch: Vec<f32> = Vec::with_capacity(CHUNK_BYTES / 4);
     while !stop.load(Ordering::Acquire) {
         match ml.iterate(true) {
             IterateResult::Success(_) => {}
@@ -305,7 +323,7 @@ fn capture_thread_run(
                 return Err(CaptureError::Pulse(format!("mainloop: {err:?}")));
             }
         }
-        drain_stream(&mut stream, prod, overflow, &mut scratch);
+        drain_stream(&mut stream, prod, overflow);
     }
 
     Ok((source_name, rate, channels))
@@ -315,20 +333,21 @@ fn drain_stream(
     stream: &mut pulse::stream::Stream,
     prod: &mut PcmProd,
     overflow: &OverflowCounter,
-    scratch: &mut Vec<f32>,
 ) {
+    // No scratch buffer: samples are parsed straight into the SPSC ring via
+    // `push_iter`, so the hot path performs zero heap allocation regardless
+    // of how large a peek fragment the server hands us.
     while !stream.readable_size().is_none() {
         match stream.peek() {
             Ok(PeekResult::Data(data)) => {
-                scratch.clear();
-                scratch.extend(
+                let total = data.len() / 4;
+                let pushed = prod.push_iter(
                     data.chunks_exact(4)
                         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
                 );
-                let pushed = prod.push_slice(scratch);
-                bump_overflow(overflow, (scratch.len() - pushed) as u64);
-                if pushed < scratch.len() {
-                    debug!(dropped = scratch.len() - pushed, "pcm ring overflow");
+                bump_overflow(overflow, (total - pushed) as u64);
+                if pushed < total {
+                    debug!(dropped = total - pushed, "pcm ring overflow");
                 }
                 let _ = stream.discard();
             }
