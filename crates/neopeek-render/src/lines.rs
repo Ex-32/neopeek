@@ -42,7 +42,9 @@ impl LinePipeline {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: None,
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<LineUniforms>() as u64,
+                    ),
                 },
                 count: None,
             }],

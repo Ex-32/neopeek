@@ -84,7 +84,9 @@ impl HudQuads {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: None,
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<[f32; 16]>() as u64,
+                    ),
                 },
                 count: None,
             }],
@@ -148,7 +150,7 @@ impl HudQuads {
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("neopeek-hud-quad-uniforms"),
-            size: 64, // one mat4
+            size: std::mem::size_of::<[f32; 16]>() as u64, // one mat4
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });

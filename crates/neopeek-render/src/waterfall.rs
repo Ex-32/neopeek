@@ -6,34 +6,43 @@ use crate::grid::{self, DEPTH};
 
 const SHADER: &str = include_str!("shaders/waterfall.wgsl");
 
-/// Uniform block matching `shaders/waterfall.wgsl` byte-for-byte (the
-/// pad/pad_end fields mirror WGSL's vec3/vec4 16-byte alignment).
+/// Uniform block matching `shaders/waterfall.wgsl` offset-for-offset (the
+/// naga reflection test in `tests/` pins every member offset + the 192 B
+/// span; see WGSL alignment rules below).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WaterUniforms {
     /// view·proj, column-major.
-    pub view_proj: [f32; 16],
-    pub head: u32,
-    pub depth: u32,
-    pub spacing: f32,
-    pub z_offset: f32,
-    pub db: f32,      // 1.0 = dB magnitude mode
-    pub rainbow: f32, // 1.0 = rainbow depth colors
-    pub gain: f32,
-    pub freq_scale: f32,
-    pub drift: f32, // slice-fade animation factor 0…1
-    /// Aligns the color vec3s to offset 112 (as WGSL does).
-    pub pad: [f32; 3],
-    /// Theme colors (PLAN.md §6.1); rgb used, a ignored.
-    pub past_color: [f32; 4],
-    pub future_color: [f32; 4],
-    pub now_color: [f32; 4],
+    pub view_proj: [f32; 16], // 0…64
+    pub head: u32,            // 64
+    pub depth: u32,           // 68
+    pub spacing: f32,         // 72
+    pub z_offset: f32,        // 76
+    pub db: f32,              // 1.0 = dB magnitude mode
+    pub rainbow: f32,         // 1.0 = rainbow depth colors
+    pub gain: f32,            // 88
+    pub freq_scale: f32,      // 92
+    pub drift: f32,           // slice-fade animation factor 0…1; 96…100
+    /// Explicit WGSL alignment gap: the shader's next member
+    /// `pad: vec3<f32>` has align 16, so WGSL places it at offset 112 and
+    /// inserts 12 bytes here after `drift` (ends 100). Naming it a real
+    /// field keeps the offset visible to testing instead of relying on
+    /// invisible repr(C) padding.
+    pub _align_hole: [f32; 3], // 100…112 (unused, WGSL gap)
+    /// The shader's `pad: vec3<f32>` member (unused in the shader). In the
+    /// uniform address space the vec3 occupies 16 B (its align), hence the
+    /// quad here; allocates exactly 112…128.
+    pub pad: [f32; 4],
+    /// Theme colors (PLAN.md §6.1); rgb used, a ignored. Align-16 in WGSL.
+    pub past_color: [f32; 4],   // 128
+    pub future_color: [f32; 4], // 144
+    pub now_color: [f32; 4],    // 160
     /// dB magnitude mapping window (Ember matches the M4 formula).
-    pub db_floor: f32,
-    pub db_ceil: f32,
+    pub db_floor: f32, // 176
+    pub db_ceil: f32,  // 180
     /// 1.0 = filled-surface mode (`S`, M8).
-    pub surface: f32,
-    /// Brings the block to 176 bytes = WGSL struct size (align 16).
+    pub surface: f32, // 184
+    /// Closes the block at 192 B = the WGSL struct span (align 16).
     pub pad_end: [f32; 1],
 }
 
@@ -50,7 +59,8 @@ impl WaterUniforms {
             gain: 1.0,
             freq_scale: 1.0,
             drift: 0.0,
-            pad: [0.0; 3],
+            _align_hole: [0.0; 3],
+            pad: [0.0; 4],
             past_color: [0.4, 1.0, 0.4, 1.0],
             future_color: [1.0, 0.7, 0.4, 1.0],
             now_color: [0.4, 1.0, 1.0, 1.0],
@@ -101,7 +111,11 @@ impl Waterfall {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: None,
+                        // Same constant the uniform buffer is sized from;
+                        // mismatch fails at pipeline creation, not first draw.
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<WaterUniforms>() as u64,
+                        ),
                     },
                     count: None,
                 },
@@ -388,17 +402,14 @@ fn create_buffer_from(
 mod tests {
     use super::*;
 
-    /// The Rust block must have exactly the WGSL-side size (176 = 11×16),
-    /// else the uniform binding fails min-binding validation.
+    /// Zeroing must produce a valid (parseable) uniform image; actual
+    /// offset/size correctness is pinned against naga's reflection of the
+    /// WGSL struct in `tests/wgsl_layout.rs`.
     #[test]
-    fn uniforms_match_wgsl_layout() {
-        assert_eq!(std::mem::size_of::<WaterUniforms>(), 176);
-        assert_eq!(
-            std::mem::offset_of!(WaterUniforms, past_color),
-            16 * 7,
-            "colors start after 11 vec4 slots (mat4 + 4 scalars + pad)"
-        );
-        assert_eq!(std::mem::offset_of!(WaterUniforms, db_floor), 160);
-        assert_eq!(std::mem::offset_of!(WaterUniforms, surface), 168);
+    fn zeroed_uniform_is_pod_message_free() {
+        let u = WaterUniforms::zeroed_view_proj();
+        assert_eq!(u.head, 0, "zeroed means head/row 0");
+        assert_eq!(u.db, 0.0);
+        assert!(u._align_hole.iter().all(|v| *v == 0.0) && u.pad.iter().all(|v| *v == 0.0));
     }
 }
