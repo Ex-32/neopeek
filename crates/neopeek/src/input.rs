@@ -4,63 +4,206 @@
 use neopeek_render::camera::{Camera, SnapView};
 use neopeek_render::views::ViewSettings;
 
-/// Applies one logical character key press. Returns `true` on quit.
-pub fn handle_key(settings: &mut ViewSettings, key: &str) -> bool {
-    match key {
-        // View toggles
-        "1" => settings.toggle_waveform(),
-        "2" => settings.toggle_lissajous(),
-        "3" | "w" => settings.toggle_waterfall(),
-        // Magnitude / color modes
-        "d" => settings.toggle_db(),
-        "S" => settings.toggle_surface(),
-        "r" => settings.toggle_rainbow(),
-        // Width of the waveform/Lissajous quads (< / >)
-        "<" => settings.scale_strip_width(false),
-        ">" => settings.scale_strip_width(true),
-        // Pseudo-Lissajous delay (y; Y is the snap-side view)
-        "y" => settings.cycle_liss_delay(),
-        // Waterfall layout
-        "u" => settings.scale_spacing(true),
-        "i" => settings.scale_spacing(false),
-        "j" => settings.move_z_offset(false), // +z (toward camera)
-        "k" => settings.move_z_offset(true),  // −z (toward horizon)
-        // Scales
-        "-" => settings.scale_spectrum(false),
-        "=" => settings.scale_spectrum(true),
-        "_" => settings.scale_waveform(false),
-        "+" => settings.scale_waveform(true),
-        "l" => settings.scale_lissajous(false),
-        "L" => settings.scale_lissajous(true),
-        // Freeze: keeps rendering, stops ingesting (f/z)
-        "f" | "z" => settings.toggle_freeze(),
-        // Mute: also stops ingesting (listener-only build)
-        "m" => settings.toggle_mute(),
-        // HUD
-        "h" => settings.toggle_hints(),
-        "H" => settings.toggle_hud(),
-        // Quit
-        "q" => return true,
-        _ => {}
+/// One key-press outcome: quit flag, plus sndpeek-parity feedback — an
+/// optional one-line description of the setting the key just changed
+/// (`None` when nothing user-visible changed; the caller logs it at
+/// INFO, PLAN.md §4.3). Descriptions use the `p` dump's field names so
+/// the console language stays consistent.
+pub type KeyPress = (bool, Option<String>);
+
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
     }
-    false
 }
 
-/// Camera keys (uppercase/bracket family). Returns `true` on quit.
-pub fn handle_camera_key(camera: &mut Camera, key: &str) -> bool {
+/// Applies one logical character key press.
+pub fn handle_key(settings: &mut ViewSettings, key: &str) -> KeyPress {
+    match key {
+        // View toggles
+        "1" => {
+            settings.toggle_waveform();
+            (false, Some(format!("waveform = {}", on_off(settings.waveform_on))))
+        }
+        "2" => {
+            settings.toggle_lissajous();
+            (false, Some(format!("lissajous = {}", on_off(settings.lissajous_on))))
+        }
+        "3" | "w" => {
+            settings.toggle_waterfall();
+            (false, Some(format!("waterfall = {}", on_off(settings.waterfall_on))))
+        }
+        // Magnitude / color modes
+        "d" => {
+            settings.toggle_db();
+            (false, Some(format!("magnitude = {}", if settings.db { "dB" } else { "linear" })))
+        }
+        "S" => {
+            settings.toggle_surface();
+            (false, Some(format!("surface = {}", on_off(settings.surface))))
+        }
+        "r" => {
+            settings.toggle_rainbow();
+            (false, Some(format!("rainbow = {}", on_off(settings.rainbow))))
+        }
+        // Width of the waveform/Lissajous quads (< / >)
+        "<" => {
+            settings.scale_strip_width(false);
+            (false, Some(format!("strip_width = {:.4}", settings.strip_width)))
+        }
+        ">" => {
+            settings.scale_strip_width(true);
+            (false, Some(format!("strip_width = {:.4}", settings.strip_width)))
+        }
+        // Pseudo-Lissajous delay (y; Y is the snap-side view)
+        "y" => {
+            settings.cycle_liss_delay();
+            (false, Some(format!("liss_delay = {}", settings.liss_delay)))
+        }
+        // Waterfall layout
+        "u" => {
+            settings.scale_spacing(true);
+            (false, Some(format!("spacing = {:.4}", settings.spacing)))
+        }
+        "i" => {
+            settings.scale_spacing(false);
+            (false, Some(format!("spacing = {:.4}", settings.spacing)))
+        }
+        "j" => {
+            settings.move_z_offset(false); // +z (toward camera)
+            (false, Some(format!("z_offset = {:+.3}", settings.z_offset)))
+        }
+        "k" => {
+            settings.move_z_offset(true); // −z (toward horizon)
+            (false, Some(format!("z_offset = {:+.3}", settings.z_offset)))
+        }
+        // Scales
+        "-" => {
+            settings.scale_spectrum(false);
+            (false, Some(format!("freq_scale = {:.3}", settings.freq_scale)))
+        }
+        "=" => {
+            settings.scale_spectrum(true);
+            (false, Some(format!("freq_scale = {:.3}", settings.freq_scale)))
+        }
+        "_" => {
+            settings.scale_waveform(false);
+            (false, Some(format!("wave_scale = {:.3}", settings.wave_scale)))
+        }
+        "+" => {
+            settings.scale_waveform(true);
+            (false, Some(format!("wave_scale = {:.3}", settings.wave_scale)))
+        }
+        "l" => {
+            settings.scale_lissajous(false);
+            (false, Some(format!("liss_scale = {:.3}", settings.liss_scale)))
+        }
+        "L" => {
+            settings.scale_lissajous(true);
+            (false, Some(format!("liss_scale = {:.3}", settings.liss_scale)))
+        }
+        // Freeze: keeps rendering, stops ingesting (f/z)
+        "f" | "z" => {
+            settings.toggle_freeze();
+            (false, Some(format!("frozen = {}", on_off(settings.frozen))))
+        }
+        // Mute: also stops ingesting (listener-only build)
+        "m" => {
+            settings.toggle_mute();
+            (false, Some(format!("muted = {}", on_off(settings.muted))))
+        }
+        // HUD
+        "h" => {
+            settings.toggle_hints();
+            (false, Some(format!("keybinds = {}", on_off(settings.show_hints))))
+        }
+        "H" => {
+            settings.toggle_hud();
+            (false, Some(format!("hud = {}", on_off(settings.hud_on))))
+        }
+        // Quit
+        "q" => (true, None),
+        _ => (false, None),
+    }
+}
+
+/// Camera keys (uppercase/bracket family).
+pub fn handle_camera_key(camera: &mut Camera, key: &str) -> KeyPress {
     match key {
         // `[`/`]` eye tilt 0.025 steps (sndpeek)
-        "[" => camera.orbit(0.0, -TILT_STEP),
-        "]" => camera.orbit(0.0, TILT_STEP),
+        "[" => {
+            camera.orbit(0.0, -TILT_STEP);
+            (false, Some(format!("camera tilt = {:+.3} rad", camera.elevation)))
+        }
+        "]" => {
+            camera.orbit(0.0, TILT_STEP);
+            (false, Some(format!("camera tilt = {:+.3} rad", camera.elevation)))
+        }
         // F reset/fit; X/Y/Z snap top/side/front
-        "F" => camera.reset(),
-        "X" => camera.snap(SnapView::Top),
-        "Y" => camera.snap(SnapView::Side),
-        "Z" => camera.snap(SnapView::Front),
-        _ => {}
+        "F" => {
+            camera.reset();
+            (false, Some("camera reset".to_owned()))
+        }
+        "X" => {
+            camera.snap(SnapView::Top);
+            (false, Some("camera: top view".to_owned()))
+        }
+        "Y" => {
+            camera.snap(SnapView::Side);
+            (false, Some("camera: side view".to_owned()))
+        }
+        "Z" => {
+            camera.snap(SnapView::Front);
+            (false, Some("camera: front view".to_owned()))
+        }
+        _ => (false, None),
     }
-    false
 }
+
+/// The full key map, for the startup INFO dump ([`keybind_block`]).
+const KEYBINDS: &[(&str, &str)] = &[
+    ("drag", "orbit"),
+    ("shift-drag", "pan"),
+    ("wheel", "zoom"),
+    ("[ ]", "camera tilt"),
+    ("F", "camera reset"),
+    ("X Y Z", "camera snap top/side/front"),
+    ("1", "waveform on/off"),
+    ("2", "lissajous on/off"),
+    ("3 w", "waterfall on/off"),
+    ("d", "dB/linear magnitude"),
+    ("S", "surface on/off"),
+    ("r", "rainbow on/off"),
+    ("< >", "waveform/lissajous strip width"),
+    ("y", "lissajous delay cycle"),
+    ("u i", "slice spacing"),
+    ("j k", "waterfall z-offset"),
+    ("-", "spectrum scale down"),
+    ("=", "spectrum scale up"),
+    ("_", "waveform scale down"),
+    ("+", "waveform scale up"),
+    ("l L", "lissajous scale"),
+    ("f z", "freeze"),
+    ("m", "mute"),
+    ("h", "keybind hints"),
+    ("H", "whole HUD"),
+    ("T", "next theme"),
+    ("p", "print settings"),
+    ("q / Esc", "quit"),
+];
+
+/// The keybind list as a terminal-friendly block: one row per bind,
+/// keys right-aligned — logged once at startup (sndpeek parity).
+pub fn keybind_block() -> String {
+    let mut out = String::new();
+    for (keys, action) in KEYBINDS {
+        out.push_str(&format!("{keys:>10}  {action}\n"));
+    }
+    out
+}
+
 
 /// Camera tilt step (`[`/`]`, sndpeek `g_inc_val_kb`).
 const TILT_STEP: f32 = 0.025;
@@ -75,7 +218,7 @@ mod tests {
     fn toggles_come_back_around() {
         let mut s = ViewSettings::default();
         assert!(s.waveform_on);
-        assert!(!handle_key(&mut s, "1"));
+        assert!(!handle_key(&mut s, "1").0);
         assert!(!s.waveform_on);
         handle_key(&mut s, "w");
         assert!(!s.waterfall_on);
@@ -165,8 +308,10 @@ mod tests {
     #[test]
     fn quit_keys() {
         let mut s = ViewSettings::default();
-        assert!(handle_key(&mut s, "q"));
-        assert!(!handle_key(&mut s, "p")); // unmapped → stays
+        let (quit, desc) = handle_key(&mut s, "q");
+        assert!(quit);
+        assert!(desc.is_none());
+        assert!(!handle_key(&mut s, "p").0); // unmapped → stays
     }
 
     #[test]
@@ -194,8 +339,47 @@ mod tests {
         assert!(!handle_key_plain(&mut c, "p"));
     }
 
+    #[test]
+    fn descriptions_report_changed_settings() {
+        // Toggle reports the NEW state.
+        let mut s = ViewSettings::default();
+        assert_eq!(handle_key(&mut s, "m").1.as_deref(), Some("muted = on"));
+        assert_eq!(handle_key(&mut s, "m").1.as_deref(), Some("muted = off"));
+        assert_eq!(handle_key(&mut s, "1").1.as_deref(), Some("waveform = off"));
+        assert_eq!(handle_key(&mut s, "d").1.as_deref(), Some("magnitude = dB"));
+        // Scale key reports the multiplied value.
+        let mut f = ViewSettings::default();
+        let (quit, desc) = handle_key(&mut f, "=");
+        assert!(!quit);
+        assert_eq!(desc.as_deref(), Some("freq_scale = 1.010"));
+        // Delay cycle reports the new sample count (512 → 256).
+        assert_eq!(handle_key(&mut s, "y").1.as_deref(), Some("liss_delay = 256"));
+        // Keys that change nothing: quit + unmapped.
+        assert_eq!(handle_key(&mut s, "q").1, None);
+        assert_eq!(handle_key(&mut s, "p").1, None);
+        assert_eq!(handle_key(&mut s, "Ω").1, None);
+        // Camera keys describe what moved.
+        let mut c = Camera::default_vantage(800, 600);
+        assert_eq!(handle_camera_key(&mut c, "F").1.as_deref(), Some("camera reset"));
+        assert_eq!(handle_camera_key(&mut c, "X").1.as_deref(), Some("camera: top view"));
+        assert_eq!(handle_camera_key(&mut c, "p").1, None);
+        let desc = handle_camera_key(&mut c, "[").1.expect("tilt logs");
+        assert!(desc.starts_with("camera tilt = "), "{desc}");
+        assert!(handle_camera_key(&mut c, "]").1.is_some());
+    }
+
+    #[test]
+    fn keybind_block_lists_every_key() {
+        let block = keybind_block();
+        // One row per entry, keys right-aligned before the action.
+        for needle in ["drag", "1", "p", "q / Esc", "camera reset", "mute"] {
+            assert!(block.contains(needle), "keybind block missing {needle:?}:\n{block}");
+        }
+        assert!(block.ends_with('\n'), "rows are newline-terminated");
+    }
+
     fn handle_key_plain(c: &mut Camera, k: &str) -> bool {
-        handle_camera_key(c, k)
+        handle_camera_key(c, k).0
     }
 
     #[test]

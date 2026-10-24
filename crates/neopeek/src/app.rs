@@ -84,6 +84,8 @@ impl App {
             tracing::warn!("{msg}");
         }
         tracing::info!(theme = %init.theme.name, "theme loaded");
+        // sndpeek parity: dump the whole key map once at startup.
+        tracing::info!(keybinds = %crate::input::keybind_block(), "available keys");
         // `--watch-theme` needs a *file* theme; built-ins watch nothing.
         let (watch, watch_path) = if watch {
             match init.path.clone() {
@@ -373,9 +375,16 @@ impl ApplicationHandler for App {
                         if c == "T" {
                             self.cycle_theme();
                         }
-                        let quit =
-                            handle_key(&mut self.settings, c)
-                                || handle_camera_key(renderer_camera(self), c);
+                        // sndpeek parity: handlers report what they
+                        // changed; we log it (INFO) — keys changing
+                        // nothing (quit, unmapped) stay silent.
+                        let (mut quit, mut desc) = handle_key(&mut self.settings, c);
+                        let (camera_quit, camera_desc) = handle_camera_key(renderer_camera(self), c);
+                        quit |= camera_quit;
+                        desc = desc.or(camera_desc);
+                        if let Some(d) = desc {
+                            tracing::info!("{d}");
+                        }
                         if quit {
                             event_loop.exit();
                         } else if c == "p" {
