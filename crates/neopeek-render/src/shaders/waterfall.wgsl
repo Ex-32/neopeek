@@ -41,6 +41,12 @@ struct WaterUniforms {
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) color: vec3<f32>,
+    // Normalized curve height, `clamp(y_lin, 0, 1)`: the heatmap
+    // coordinate the fragment stage re-maps when `rainbow` is on.
+    // Negative marks vertices whose color is final in the vertex stage
+    // (theme paths, arriving-plane blends) — the fragment pass keeps
+    // the vertex color and never runs the hue ramp on them.
+    @location(1) height: f32,
 }
 
 // Standard HSV→RGB (hue in turns).
@@ -55,6 +61,15 @@ fn hue_rgb(h: f32) -> vec3<f32> {
         vec3(0.0),
         vec3(1.0),
     );
+}
+
+// Rainbow = height heatmap, not depth: hue sweeps ~0.72 → 0 turns as the
+// normalized curve height t rises 0 → 1 — violet-blue at the floor,
+// cyan/green through the middle, yellow → red at the crest (classic heat
+// ramp). Height is the MAGNITUDE mapping (`y_lin`), not the drawn y, so
+// linear and dB display modes color the same curve identically.
+fn heat_hue(t: f32) -> f32 {
+    return (1.0 - t) * 0.72;
 }
 
 @vertex
@@ -79,11 +94,13 @@ fn vs_main(
     let fval = (depth - s + u.drift) / depth;
 
     // Filled-surface mode (M8): color from the theme ramp over the linear
-    // height fraction; depth-cued like the line mode.
+    // height fraction; depth-cued like the line mode. (Rainbow replaces
+    // this ramp with the height heatmap — see below.)
     if u.surface > 0.5 {
         let t = clamp(y_lin, 0.0, 1.0);
         var c = textureLoad(ramp, vec2<u32>(u32(t * 255.0 + 0.5), 0u), 0).rgb;
         c = c * fval;
+        var heat_t = -1.0; // theme ramp: vertex colors are final
         if (slice == 0u) {
             // The arriving plane blends now_line → future (theme).
             c = mix(u.now_color.rgb, u.future_color.rgb, u.drift);
@@ -91,23 +108,31 @@ fn vs_main(
         return VsOut(
             u.view_proj * vec4<f32>(x, y, z, 1.0),
             c,
+            heat_t,
         );
     }
 
     let past = u.past_color.rgb * fval;
-    let rainbow = hue_rgb(0.15 + 0.55 * fval);
-    var color = select(past, rainbow, u.rainbow > 0.5);
+    let heat = hue_rgb(heat_hue(clamp(y_lin, 0.0, 1.0)));
+    var color = select(past, heat, u.rainbow > 0.5);
+    var heat_t = select(-1.0, clamp(y_lin, 0.0, 1.0), u.rainbow > 0.5);
     if (slice == 0u) {
         color = u.now_color.rgb; // the "now" line
+        heat_t = -1.0;
     }
 
     return VsOut(
         u.view_proj * vec4<f32>(x, y, z, 1.0),
         color,
+        heat_t,
     );
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color, 1.0);
+    // Height heatmap (rainbow on): per-pixel hue from the interpolated
+    // curve height for a smooth gradient along every segment/triangle.
+    // Negative height = the vertex color is already final.
+    let c = select(in.color, hue_rgb(heat_hue(in.height)), in.height >= 0.0);
+    return vec4<f32>(c, 1.0);
 }
