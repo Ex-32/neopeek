@@ -1,0 +1,80 @@
+//! Reusable `--print`/`p` settings dump (sndpeek parity): formats the
+//! current [`ViewSettings`] + [`Camera`] state. The binary wires it to
+//! both the `p` key and the future `--print` console flag.
+
+use crate::camera::Camera;
+use crate::views::ViewSettings;
+
+/// Multi-line human-readable dump of the live settings.
+pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
+    let flag = |on: bool| if on { "on" } else { "off" };
+    format!(
+        "neopeek settings\n\
+         waterfall: {}, waveform: {}, lissajous: {}\n\
+         magnitude: {}, rainbow: {}, frozen: {}\n\
+         spacing: {:.4}, z_offset: {:+.3}, log_factor: {:.3}\n\
+         freq_scale: {:.3}, wave_scale: {:.3}, liss_scale: {:.3}\n\
+         camera.target = ({:.3}, {:.3}, {:.3})\n\
+         camera.azimuth = {:.3} rad, elevation = {:.3} rad, distance = {:.3}\n\
+         camera.fov = {:.1}°, near = {:.3}, far = {:.1}, aspect = {:.3}",
+        flag(settings.waterfall_on),
+        flag(settings.waveform_on),
+        flag(settings.lissajous_on),
+        if settings.db { "dB" } else { "linear" },
+        flag(settings.rainbow),
+        flag(settings.frozen),
+        settings.spacing,
+        settings.z_offset,
+        settings.log_factor,
+        settings.freq_scale,
+        settings.wave_scale,
+        settings.liss_scale,
+        camera.target[0],
+        camera.target[1],
+        camera.target[2],
+        camera.azimuth,
+        camera.elevation,
+        camera.distance,
+        camera.fov_y.to_degrees(),
+        camera.near,
+        camera.far,
+        camera.aspect,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dump_contains_all_m5_keys() {
+        let s = ViewSettings::default();
+        let c = Camera::default_vantage(800, 600);
+        let txt = settings_string(&s, &c);
+        for needle in [
+            "waterfall: on",
+            "magnitude: linear",
+            "log_factor: 1.500",
+            "spacing: 0.1200",
+            "liss_scale: 0.450",
+            "camera.azimuth",
+            "distance = 3.500",
+            "fov = 45.0°",
+        ] {
+            assert!(txt.contains(needle), "dump missing {needle:?}:\n{txt}");
+        }
+    }
+
+    #[test]
+    fn dump_reflects_state_changes() {
+        let mut s = ViewSettings::default();
+        let mut c = Camera::default_vantage(800, 600);
+        s.toggle_db();
+        s.toggle_freeze();
+        c.orbit(1.0, 0.0);
+        let txt = settings_string(&s, &c);
+        assert!(txt.contains("magnitude: dB"));
+        assert!(txt.contains("frozen: on"));
+        assert!(txt.contains("azimuth = 1.000"));
+    }
+}

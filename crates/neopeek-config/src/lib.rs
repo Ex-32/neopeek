@@ -42,6 +42,11 @@ pub struct Cli {
     /// pipewire-pulse); `alsa` fallback lands later (PLAN.md §3.3).
     #[arg(long = "backend", value_name = "BACKEND", default_value = "pulse")]
     pub backend: String,
+
+    /// Slow continuous scene yaw, sndpeek's classic spin behavior
+    /// (PLAN.md §4.3). Off by default.
+    #[arg(long, help = "slow continuous yaw (sndpeek-style autospin)")]
+    pub autospin: bool,
 }
 
 impl Cli {

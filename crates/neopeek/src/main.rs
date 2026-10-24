@@ -30,7 +30,7 @@ fn main() {
     let event_loop = winit::event_loop::EventLoop::new().expect("create winit event loop");
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
 
-    let mut app_state = app::App::new(cli.device.clone());
+    let mut app_state = app::App::new(cli.device.clone(), cli.autospin);
     if let Err(err) = event_loop.run_app(&mut app_state) {
         tracing::error!("event loop error: {err}");
         std::process::exit(1);

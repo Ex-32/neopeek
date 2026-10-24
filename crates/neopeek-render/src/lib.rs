@@ -20,6 +20,7 @@
 //! flake, per the no-GUI-testing rule in PLAN.md §9.
 
 pub mod camera;
+pub mod dump;
 pub mod frame_ring;
 pub mod grid;
 pub mod history;

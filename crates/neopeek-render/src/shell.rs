@@ -185,6 +185,16 @@ impl Renderer {
         }
     }
 
+    /// Camera mutation for the input layer (drag orbit/pan/zoom).
+    pub fn camera_mut(&mut self) -> &mut Camera {
+        &mut self.camera
+    }
+
+    /// Immutable read for diagnostics dumps.
+    pub fn camera(&self) -> &Camera {
+        &self.camera
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         self.config.width = width.max(1);
         self.config.height = height.max(1);

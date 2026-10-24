@@ -1,11 +1,11 @@
-//! Key mapping (PLAN.md §4.3, M4 subset): input handling stays in the
-//! binary; it owns the [`ViewSettings`]. Mouse camera interaction = M5.
+//! Input mapping (PLAN.md §4.3): keys + mouse handling stay in the
+//! binary; it owns the [`ViewSettings`] and the shell [`Camera`].
 
+use neopeek_render::camera::{Camera, SnapView};
 use neopeek_render::views::ViewSettings;
 
-/// Applies one logical key press. Returns `true` when the app should exit.
+/// Applies one logical character key press. Returns `true` on quit.
 pub fn handle_key(settings: &mut ViewSettings, key: &str) -> bool {
-    debug_assert!(settings.log_factor > 0.0);
     match key {
         // View toggles
         "1" => settings.toggle_waveform(),
@@ -35,9 +35,30 @@ pub fn handle_key(settings: &mut ViewSettings, key: &str) -> bool {
     false
 }
 
+/// Camera keys (uppercase/bracket family). Returns `true` on quit.
+pub fn handle_camera_key(camera: &mut Camera, key: &str) -> bool {
+    match key {
+        // `[`/`]` eye tilt 0.025 steps (sndpeek)
+        "[" => camera.orbit(0.0, -TILT_STEP),
+        "]" => camera.orbit(0.0, TILT_STEP),
+        // F reset/fit; X/Y/Z snap top/side/front
+        "F" => camera.reset(),
+        "X" => camera.snap(SnapView::Top),
+        "Y" => camera.snap(SnapView::Side),
+        "Z" => camera.snap(SnapView::Front),
+        _ => {}
+    }
+    false
+}
+
+/// Camera tilt step (`[`/`]`, sndpeek `g_inc_val_kb`).
+const TILT_STEP: f32 = 0.025;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use neopeek_render::camera::{ELEV_MAX, SnapView as SV};
+    use neopeek_render::views::ViewSettings;
 
     #[test]
     fn toggles_come_back_around() {
@@ -85,8 +106,6 @@ mod tests {
         assert!((s.freq_scale - f0).abs() < 1e-3, "back to {f0}? got {}", s.freq_scale);
 
         let w0 = s.wave_scale;
-        // '_' needs shift on most layouts: unshifted is '-'; the logical
-        // key is the character, shift → "+"; so '_' tests both directly.
         handle_key(&mut s, "_");
         assert!(s.wave_scale < w0);
         handle_key(&mut s, "+");
@@ -104,5 +123,42 @@ mod tests {
         let mut s = ViewSettings::default();
         assert!(handle_key(&mut s, "q"));
         assert!(!handle_key(&mut s, "p")); // unmapped → stays
+    }
+
+    #[test]
+    fn camera_keys() {
+        // Default vantage ≈ M4 fixed eye
+        let mut c = Camera::default_vantage(800, 600);
+        assert!((c.elevation - 0.55).abs() < 1e-6);
+        handle_key_plain(&mut c, "X");
+        assert!((c.elevation - ELEV_MAX).abs() < 1e-6);
+        handle_key_plain(&mut c, "Y");
+        assert!((c.azimuth - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        handle_key_plain(&mut c, "Z");
+        assert!(c.elevation.abs() < 1e-6 && c.azimuth.abs() < 1e-6);
+
+        // `F` restores the default vantage
+        let mut d = Camera::default_vantage(800, 600);
+        d.orbit(3.0, 1.0);
+        d.dolly(3.0);
+        d.target = [5.0, 5.0, 5.0];
+        handle_key_plain(&mut d, "F");
+        let e = Camera::default_vantage(800, 600);
+        assert!((d.azimuth - e.azimuth).abs() < 1e-6);
+        assert!((d.distance - e.distance).abs() < 1e-6);
+        assert!((d.target[0] - e.target[0]).abs() < 1e-6);
+        assert!(!handle_key_plain(&mut c, "p"));
+    }
+
+    fn handle_key_plain(c: &mut Camera, k: &str) -> bool {
+        handle_camera_key(c, k)
+    }
+
+    #[test]
+    fn snap_enum_matches_keys() {
+        // X→top, Y→side, Z→front (documented mapping).
+        let mut c = Camera::default_vantage(800, 600);
+        c.snap(SV::Top);
+        assert!((c.elevation - ELEV_MAX).abs() < 1e-6);
     }
 }
