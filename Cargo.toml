@@ -37,6 +37,7 @@ thiserror = "2"
 # internal
 neopeek-audio = { path = "crates/neopeek-audio" }
 neopeek-config = { path = "crates/neopeek-config" }
+neopeek-dsp = { path = "crates/neopeek-dsp" }
 
 [profile.release]
 lto = "thin"

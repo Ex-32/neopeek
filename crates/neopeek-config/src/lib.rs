@@ -23,6 +23,16 @@ pub struct Cli {
     )]
     pub dump_pcm: Option<f64>,
 
+    /// Present ⇔ `--dump-fft` was given (per-slice feature readout lines).
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_missing_value = "2.0",
+        num_args = 0..=1,
+        help = "run the FFT pipeline on SECONDS (default 2) of capture and print features"
+    )]
+    pub dump_fft: Option<f64>,
+
     /// Capture source by name (see --list-devices); default is the default
     /// sink's monitor ("what the host hears").
     #[arg(long, value_name = "SOURCE", help = "capture source by name")]
@@ -37,12 +47,17 @@ pub struct Cli {
 impl Cli {
     /// True when a non-visual CLI action was requested.
     pub fn has_cli_action(&self) -> bool {
-        self.list_devices || self.dump_pcm.is_some()
+        self.list_devices || self.dump_pcm.is_some() || self.dump_fft.is_some()
     }
 
     /// Seconds to dump when `--dump-pcm` is set (default 2).
     pub fn dump_seconds(&self) -> f64 {
         self.dump_pcm.unwrap_or(2.0)
+    }
+
+    /// Seconds to feed the FFT pipeline when `--dump-fft` is set (default 2).
+    pub fn dump_fft_seconds(&self) -> f64 {
+        self.dump_fft.unwrap_or(2.0)
     }
 }
 
@@ -74,6 +89,10 @@ mod tests {
 
         let listed = Cli::try_parse_from(["neopeek", "--list-devices"]).unwrap();
         assert!(listed.list_devices);
+
+        let fft = Cli::try_parse_from(["neopeek", "--dump-fft"]).unwrap();
+        assert_eq!(fft.dump_fft_seconds(), 2.0);
+        assert!(fft.has_cli_action());
 
         let dev =
             Cli::try_parse_from(["neopeek", "--device", "alsa_output.pci-0000.monitor"]).unwrap();

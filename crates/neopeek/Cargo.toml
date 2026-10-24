@@ -9,6 +9,7 @@ authors.workspace = true
 [dependencies]
 neopeek-audio.workspace = true
 neopeek-config.workspace = true
+neopeek-dsp.workspace = true
 ringbuf.workspace = true
 winit.workspace = true
 wgpu.workspace = true

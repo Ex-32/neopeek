@@ -1,4 +1,5 @@
-//! Non-visual CLI actions for M2: `--list-devices` and `--dump-pcm`.
+//! Non-visual CLI actions for M2/M3: `--list-devices`, `--dump-pcm`, and
+//! the `--dump-fft` pipeline debug readout.
 
 use std::io::Write;
 
@@ -30,7 +31,22 @@ pub fn run(cli: &Cli) -> Result<(), String> {
     if cli.dump_pcm.is_some() {
         return dump_pcm(cli);
     }
+
+    if cli.dump_fft.is_some() {
+        return dump_fft(cli);
+    }
+
     unreachable!("has_cli_action guarantees an action")
+}
+
+/// argmax over a slice of magnitudes.
+fn argmax(slice: &[f32]) -> usize {
+    slice
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(k, _)| k)
+        .unwrap_or(0)
 }
 
 fn dump_pcm(cli: &Cli) -> Result<(), String> {
@@ -67,6 +83,69 @@ fn dump_pcm(cli: &Cli) -> Result<(), String> {
             }
         }
         written += popped;
+    }
+    Ok(())
+}
+
+fn dump_fft(cli: &Cli) -> Result<(), String> {
+    use neopeek_dsp::Engine;
+
+    let seconds = cli.dump_fft_seconds();
+    let (capture, mut cons) = Capture::start(cli.device.clone())
+        .map_err(|err| format!("capture unavailable: {err}"))?;
+    eprintln!(
+        "running FFT pipeline for {seconds:.1} s from {} ({} Hz)",
+        capture.source_name, capture.rate
+    );
+
+    let window_bytes = neopeek_dsp::WINDOW_FRAMES * CHANNELS;
+    // Staging buffer of pending samples; bounded at 8 windows — when it
+    // overflows we drop the oldest whole windows (drop-oldest overall).
+    let mut staging: Vec<f32> = Vec::with_capacity(window_bytes * 8);
+    // Scratch buffer reused across pops (no per-iteration allocation).
+    let mut tmp = vec![0f32; window_bytes];
+    let mut engine = Engine::new();
+    let mut processed = 0usize;
+    let target_slices =
+        (seconds * capture.rate as f64 / neopeek_dsp::WINDOW_FRAMES as f64).ceil() as usize;
+
+    while processed < target_slices {
+        let popped = cons.pop_slice(&mut tmp);
+        if popped > 0 {
+            staging.extend_from_slice(&tmp[..popped]);
+            let max_len = window_bytes * 8;
+            if staging.len() > max_len {
+                // drop whole windows from the front, keep the newest 4
+                let drop_len = staging.len() - window_bytes * 4;
+                let aligned = drop_len - (drop_len % 2); // keep sample alignment
+                staging.drain(..aligned);
+            }
+        } else if staging.len() >= window_bytes {
+            // no new data — keep draining what's pending
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            continue;
+        }
+        if staging.len() < window_bytes {
+            continue;
+        }
+        let frame_slice: Vec<f32> = staging.drain(..window_bytes).collect();
+        if let Some(frame) = engine.process_window(&frame_slice) {
+            // bins → Hz: bin * rate / fft_size (rated at half the spectrum)
+            let hz = |bins: f32| {
+                bins as f64 * (capture.rate as f64) / neopeek_dsp::FFT_SIZE as f64
+            };
+            println!(
+                "seq={} rms=({:.4},{:.4}) peak=({:.4},{:.4}) centroid={:.1}Hz flux={:.3} ro50={:.1}Hz ro80={:.1}Hz peak_bin={}",
+                frame.seq,
+                frame.rms[0], frame.rms[1],
+                frame.peak[0], frame.peak[1],
+                hz(frame.centroid), frame.flux,
+                hz(frame.rolloff50), hz(frame.rolloff80),
+                argmax(&frame.bins),
+            );
+            processed += 1;
+        }
     }
     Ok(())
 }
