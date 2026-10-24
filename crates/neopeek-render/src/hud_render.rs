@@ -312,7 +312,8 @@ impl HudUI {
         // (omitted when hidden), overlay centered. `TextArea.left/top`
         // are physical; glyphon scales the buffer's logical glyph
         // coordinates itself.
-        let anchors = crate::hud::hud_text_anchors(width, height, scale, self.font_px, 1);
+        let anchors =
+            crate::hud::hud_text_anchors(width, height, scale, self.font_px, crate::hud::HINT_LINES);
         let hint_color = Theme::rgb8(&theme.hud.dim);
         let ours: [Area; 4] = [
             (&self.buffers[0], anchors[0], text),
@@ -391,15 +392,15 @@ fn device_panel(ui: &mut HudUI, hud: &HudData) {
 }
 
 /// The keybind dump lives in its own buffer so the theme's `dim` color
-/// can shade it independently of the stats line.
+/// can shade it independently of the stats line. Two lines: the single
+/// line overflowed the surface width and its tail was cut off.
 fn hints_panel(ui: &mut HudUI) {
     let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
-    ui.buffers[4].set_text(
-        "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · 1 wave · 2 liss · 3 waterfall · S surface · d dB · r rainbow · u i spacing · j k z-offset · l L liss · < > width · y liss-delay · f freeze · m mute · h hints · H hud · T theme · F X Y Z snap · p print · q quit",
-        &attrs,
-        Shaping::Advanced,
-        None,
+    let text = concat!(
+        "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · 1 wave · 2 liss · 3 waterfall · S surface · d dB · r rainbow · u i spacing\n",
+        "j k z-offset · l L liss · < > width · y liss-delay · f freeze · m mute · h hints · H hud · T theme · F X Y Z snap · p print · q quit",
     );
+    ui.buffers[4].set_text(text, &attrs, Shaping::Advanced, None);
 }
 
 fn overlay_panel(ui: &mut HudUI, hud: &HudData) {

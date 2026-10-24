@@ -171,6 +171,8 @@ const OVERLAY_TOP: f32 = 30.0;
 const BOTTOM_PAD: f32 = 4.0;
 /// Gap between the device line and the hints line(s).
 const BOTTOM_LINE_GAP: f32 = 2.0;
+/// Keybind hints wrap to two lines so every bind fits the surface width.
+pub const HINT_LINES: usize = 2;
 
 /// Top-left anchor positions of the five HUD text panels, in **physical**
 /// pixels, computed from the current surface size, DPI scale and font
