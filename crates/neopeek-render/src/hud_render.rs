@@ -228,9 +228,6 @@ impl HudQuads {
     }
 }
 
-/// One laid-out text panel: buffer, physical-pixel (left, top) anchor, rgb color.
-type Area<'a> = (&'a cosmic_text::Buffer, (f32, f32), (u8, u8, u8));
-
 /// Persistent glyphon state for the HUD text.
 pub struct HudUI {
     atlas: glyphon::TextAtlas,
@@ -272,13 +269,16 @@ impl HudUI {
         );
         // fontdb starts empty and gets exactly one face — no fontconfig
         // parse, no /usr/share/fonts walk, no per-face metadata for fonts
-        // this HUD never names (the old `FontSystem::new()` + reload
-        // scanned and registered every system font at startup).
+        // this HUD never names. Note `new_with_fonts` still scans system
+        // fonts under the `std` feature (it calls `load_system_fonts`
+        // internally), so the pre-built-database constructor is the only
+        // scan-free path.
+        let mut db = cosmic_text::fontdb::Database::new();
         let data: std::sync::Arc<dyn AsRef<[u8]> + Send + Sync> =
             std::sync::Arc::new(FONT_JETBRAINS_MONO);
-        let font_system = cosmic_text::FontSystem::new_with_fonts(std::iter::once(
-            cosmic_text::fontdb::Source::Binary(data),
-        ));
+        db.load_font_source(cosmic_text::fontdb::Source::Binary(data));
+        let font_system =
+            cosmic_text::FontSystem::new_with_locale_and_db("en-US".to_owned(), db);
         Self {
             atlas,
             renderer,
@@ -511,5 +511,52 @@ mod tests {
         // cap-sized scratch.
         assert_eq!(crate::hud::meter_rects([0.5, 0.5], [0.5, 0.5]).len(), HUD_QUAD_INSTANCE_CAP);
         assert_eq!(HUD_QUAD_INSTANCE_FLOATS, HUD_QUAD_INSTANCE_CAP * 8);
+    }
+
+    /// Mirrors `HudUI::new`'s database construction headlessly: exactly
+    /// one face (the embedded JetBrains Mono, no system scan), the HUD
+    /// family resolves against it, and every codepoint the HUD strings
+    /// use shapes to a real glyph (no .notdef / tofu).
+    #[test]
+    fn font_db_holds_only_jetbrains_mono_and_covers_hud_codepoints() {
+        use std::sync::Arc;
+        let mut db = cosmic_text::fontdb::Database::new();
+        let data: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(FONT_JETBRAINS_MONO);
+        db.load_font_source(cosmic_text::fontdb::Source::Binary(data));
+        let mut fs = cosmic_text::FontSystem::new_with_locale_and_db(
+            "en-US".to_owned(),
+            db,
+        );
+        let faces: Vec<_> = fs.db().faces().collect();
+        assert_eq!(faces.len(), 1, "database must hold exactly the embedded font");
+        assert!(
+            faces[0]
+                .families
+                .iter()
+                .any(|(name, _)| name.contains("JetBrains Mono")),
+            "embedded face is not JetBrains Mono: {:?}",
+            faces[0].families
+        );
+
+        // Every non-ASCII codepoint emitted by HUD strings (device line,
+        // hints) plus ASCII digits/letters, shaped through the HUD path.
+        let sample = "60 fps 16.7 ms § · × — … → − ≈ ≠ ≥ Ω alsa_output…monitor";
+        let mut buf =
+            cosmic_text::Buffer::new_empty(cosmic_text::Metrics::new(14.0, 20.0));
+        buf.set_text(
+            sample,
+            &cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono")),
+            Shaping::Advanced,
+            None,
+        );
+        buf.shape_until_scroll(&mut fs, false);
+        let mut glyphs = 0;
+        for run in buf.layout_runs() {
+            for g in run.glyphs {
+                assert_ne!(g.glyph_id, 0, "tofu (missing glyph) in HUD sample");
+                glyphs += 1;
+            }
+        }
+        assert!(glyphs > 10, "shaping produced {glyphs} glyphs, expected more");
     }
 }
