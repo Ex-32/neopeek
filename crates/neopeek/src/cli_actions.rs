@@ -36,6 +36,10 @@ pub fn run(cli: &Cli) -> Result<(), String> {
         return dump_fft(cli);
     }
 
+    if cli.print.is_some() {
+        return print_features(cli);
+    }
+
     unreachable!("has_cli_action guarantees an action")
 }
 
@@ -88,9 +92,49 @@ fn dump_pcm(cli: &Cli) -> Result<(), String> {
 }
 
 fn dump_fft(cli: &Cli) -> Result<(), String> {
+    // One capture+FFT code path, two formatters: `--dump-fft` prints the
+    // verbose per-slice debug readout, `--print` sndpeek's parity format
+    // (centroid/rolloff in Hz, plain floats; documented in README).
+    run_fft_capture(cli, cli.dump_fft_seconds(), |capture, frame| {
+        let hz = bins_to_hz(capture.rate);
+        format!(
+            "seq={} rms=({:.4},{:.4}) peak=({:.4},{:.4}) centroid={:.1}Hz flux={:.3} ro50={:.1}Hz ro80={:.1}Hz peak_bin={}",
+            frame.seq,
+            frame.rms[0], frame.rms[1],
+            frame.peak[0], frame.peak[1],
+            hz(frame.centroid), frame.flux,
+            hz(frame.rolloff50), hz(frame.rolloff80),
+            argmax(&frame.bins),
+        )
+    })
+}
+
+fn print_features(cli: &Cli) -> Result<(), String> {
+    run_fft_capture(cli, cli.print_seconds(), |capture, frame| {
+        let hz = bins_to_hz(capture.rate);
+        format!(
+            "{:.1} {:.3} {:.4} {:.1} {:.1}",
+            hz(frame.centroid),
+            frame.flux,
+            (frame.rms[0] + frame.rms[1]) / 2.0,
+            hz(frame.rolloff50),
+            hz(frame.rolloff80),
+        )
+    })
+}
+
+/// Bins → Hz at the negotiated rate (HUD/shared conversion).
+fn bins_to_hz(rate: u32) -> impl Fn(f32) -> f64 + Copy {
+    move |bins: f32| bins as f64 * (rate as f64) / neopeek_dsp::FFT_SIZE as f64
+}
+
+fn run_fft_capture(
+    cli: &Cli,
+    seconds: f64,
+    fmt_line: impl Fn(&neopeek_audio::Capture, neopeek_dsp::Frame) -> String,
+) -> Result<(), String> {
     use neopeek_dsp::Engine;
 
-    let seconds = cli.dump_fft_seconds();
     let (capture, mut cons) = Capture::start(cli.device.clone())
         .map_err(|err| format!("capture unavailable: {err}"))?;
     eprintln!(
@@ -131,19 +175,7 @@ fn dump_fft(cli: &Cli) -> Result<(), String> {
         }
         let frame_slice: Vec<f32> = staging.drain(..window_bytes).collect();
         if let Some(frame) = engine.process_window(&frame_slice) {
-            // bins → Hz: bin * rate / fft_size (rated at half the spectrum)
-            let hz = |bins: f32| {
-                bins as f64 * (capture.rate as f64) / neopeek_dsp::FFT_SIZE as f64
-            };
-            println!(
-                "seq={} rms=({:.4},{:.4}) peak=({:.4},{:.4}) centroid={:.1}Hz flux={:.3} ro50={:.1}Hz ro80={:.1}Hz peak_bin={}",
-                frame.seq,
-                frame.rms[0], frame.rms[1],
-                frame.peak[0], frame.peak[1],
-                hz(frame.centroid), frame.flux,
-                hz(frame.rolloff50), hz(frame.rolloff80),
-                argmax(&frame.bins),
-            );
+            println!("{}", fmt_line(&capture, frame));
             processed += 1;
         }
     }

@@ -101,7 +101,12 @@ off by default).
 - `--device <name>`: record from a specific source; default is the default
   sink's monitor ("what the host hears").
 - `--dump-pcm [seconds]` / `--dump-fft [seconds]`: stdout dumps of raw
-  interleaved f32 PCM / per-slice features (capture must be available).
+  interleaved f32 PCM / verbose per-slice features (capture must be
+  available).
+- `--print [seconds]`: sndpeek parity — one space-separated line per
+  FFT slice: `centroid_hz flux rms ro50_hz ro80_hz` (plain floats;
+  no MFCC). Shares the capture+FFT path with `--dump-fft`, which prints
+  the more verbose debug format instead.
 - The negotiated sample spec (rate/format/channels) is returned by the
   capture handshake and refused if not f32 stereo; the DSP window is 1024
   frames (≈21.3 ms @48 kHz) zero-padded to a 2048-point FFT (1024 bins).

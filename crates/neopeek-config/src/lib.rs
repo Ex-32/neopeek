@@ -33,6 +33,18 @@ pub struct Cli {
     )]
     pub dump_fft: Option<f64>,
 
+    /// sndpeek `--print` parity: run capture + FFT on SECONDS (default 2)
+    /// and print one space-separated line per slice:
+    /// `centroid_hz flux rms ro50_hz ro80_hz`.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_missing_value = "2.0",
+        num_args = 0..=1,
+        help = "print SECONDS (default 2) of per-slice features and exit"
+    )]
+    pub print: Option<f64>,
+
     /// Capture source by name (see --list-devices); default is the default
     /// sink's monitor ("what the host hears").
     #[arg(long, value_name = "SOURCE", help = "capture source by name")]
@@ -62,6 +74,7 @@ impl Cli {
     /// True when a non-visual CLI action was requested.
     pub fn has_cli_action(&self) -> bool {
         self.list_devices || self.dump_pcm.is_some() || self.dump_fft.is_some()
+            || self.print.is_some()
     }
 
     /// Seconds to dump when `--dump-pcm` is set (default 2).
@@ -72,6 +85,11 @@ impl Cli {
     /// Seconds to feed the FFT pipeline when `--dump-fft` is set (default 2).
     pub fn dump_fft_seconds(&self) -> f64 {
         self.dump_fft.unwrap_or(2.0)
+    }
+
+    /// Seconds to feed the pipeline when `--print` is set (default 2).
+    pub fn print_seconds(&self) -> f64 {
+        self.print.unwrap_or(2.0)
     }
 }
 
@@ -111,6 +129,18 @@ mod tests {
         let dev =
             Cli::try_parse_from(["neopeek", "--device", "alsa_output.pci-0000.monitor"]).unwrap();
         assert_eq!(dev.device.as_deref(), Some("alsa_output.pci-0000.monitor"));
+
+        let print_bare = Cli::try_parse_from(["neopeek", "--print"]).unwrap();
+        assert_eq!(print_bare.print, Some(2.0));
+        assert!(print_bare.has_cli_action(), "--print is an action");
+        assert_eq!(print_bare.print_seconds(), 2.0);
+
+        let print_explicit = Cli::try_parse_from(["neopeek", "--print", "1.5"]).unwrap();
+        assert_eq!(print_explicit.print_seconds(), 1.5);
+
+        // Explicit (but zero) seconds is still an action.
+        let zero = Cli::try_parse_from(["neopeek", "--print", "0"]).unwrap();
+        assert!(zero.has_cli_action());
     }
 
     #[test]
