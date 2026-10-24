@@ -1,7 +1,7 @@
 // Terminal: high-contrast phosphor-CRT hacker green on near-black.
 (
     name: "Terminal",
-    background: "#030603",
+    background: "#010401",
     waterfall: (
         past: "#39ff14",      // classic terminal green
         future: "#148f10",    // darker green for the filled mode

@@ -2,7 +2,7 @@
 // Lissajous — hot-pink accent.
 (
     name: "Cyber",
-    background: "#0a0410",
+    background: "#050208",
     waterfall: (
         past: "#ff006e",       // hot pink
         future: "#ff5c9e",     // lighter pink for the filled mode
