@@ -337,13 +337,7 @@ impl HudUI {
         let now = Instant::now();
         if now >= self.next_refresh {
             self.next_refresh = now + PANEL_REFRESH;
-            let texts = [
-                feature_text(hud),
-                perf_text(hud),
-                device_text(hud),
-                hints_text().to_owned(),
-                overlay_text(hud),
-            ];
+            let texts = panel_texts(hud);
             let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
             for (buf, (last, next)) in self
                 .buffers
@@ -373,7 +367,7 @@ impl HudUI {
         // true bottom margin instead of floating above an invisible
         // hints block (previously the constant HINT_LINES was always
         // passed, leaving a gap where the hints used to be).
-        let hint_lines = if hud.show_hints { crate::hud::HINT_LINES } else { 0 };
+        let hint_lines = crate::hud::hint_lines_for(hud.show_hints);
         let anchors =
             crate::hud::hud_text_anchors(width, height, scale, self.font_px, hint_lines);
         let hint_color = Theme::rgb8(&theme.hud.dim);
@@ -415,15 +409,14 @@ impl HudUI {
                 default_color: cosmic_text::Color::rgb(accent.0, accent.1, accent.2),
                 custom_glyphs: &[],
             }),
-            hud.show_hints.then(|| TextArea {
-                buffer: &self.buffers[4],
-                left: anchors[4].0,
-                top: anchors[4].1,
+            hints_area(
+                &self.buffers[4],
+                anchors[4].0,
+                anchors[4].1,
                 scale,
-                bounds: TextBounds::default(),
-                default_color: cosmic_text::Color::rgb(hint_color.0, hint_color.1, hint_color.2),
-                custom_glyphs: &[],
-            }),
+                hint_color,
+                hud.show_hints,
+            ),
         ];
         // Depth per glyph (metadata): 0.5 keeps text above the scene in the
         // screen-space pass (no depth state on this pipeline — unused).
@@ -451,8 +444,47 @@ fn feature_text(hud: &HudData) -> String {
     hud.feature_lines.join("\n")
 }
 
+/// Canonical buffer order: [0] features, [1] perf column, [2] device
+/// stats, [3] center overlay, [4] keybind hints. This must stay in sync
+/// with the anchors/textarea indexing in `prepare` (and with
+/// `HudData::assemble`'s field names) — the hints bug of the 2026-10
+/// run was exactly this array being one entry out of order, putting
+/// the always-on hint blob in the center-overlay slot and gating the
+/// overlay behind `show_hints` instead.
+fn panel_texts(hud: &HudData) -> [String; 5] {
+    [
+        feature_text(hud),
+        perf_text(hud),
+        device_text(hud),
+        overlay_text(hud),
+        hints_text().to_owned(),
+    ]
+}
+
 fn perf_text(hud: &HudData) -> String {
     format!("{:.0} fps\n{:.1} ms\n{}", hud.fps, hud.frame_ms, hud.adapter)
+}
+
+/// The TextArea for the keybind-hints panel, or `None` when hints are
+/// hidden — this is the entire show/hide decision, extracted from the
+/// device-bound `prepare` so tests can pin the areas omission.
+fn hints_area(
+    buffer: &cosmic_text::Buffer,
+    left: f32,
+    top: f32,
+    scale: f32,
+    color: (u8, u8, u8),
+    show: bool,
+) -> Option<TextArea<'_>> {
+    show.then(|| TextArea {
+        buffer,
+        left,
+        top,
+        scale,
+        bounds: TextBounds::default(),
+        default_color: cosmic_text::Color::rgb(color.0, color.1, color.2),
+        custom_glyphs: &[],
+    })
 }
 
 fn device_text(hud: &HudData) -> String {
@@ -558,5 +590,62 @@ mod tests {
             }
         }
         assert!(glyphs > 10, "shaping produced {glyphs} glyphs, expected more");
+    }
+
+    /// The hints TextArea must be OMITTED from the areas list when
+    /// hints are hidden (`h`); `hints_area` is that entire decision,
+    /// extracted from the device-bound `prepare`.
+    #[test]
+    fn hints_area_omitted_when_hidden_and_present_when_shown() {
+        let buffer = cosmic_text::Buffer::new_empty(cosmic_text::Metrics::new(14.0, 20.0));
+        let color = (1, 2, 3);
+        assert!(hints_area(&buffer, 10.0, 576.0, 1.0, color, false).is_none());
+        let a = hints_area(&buffer, 10.0, 576.0, 1.0, color, true).unwrap();
+        assert_eq!(a.left, 10.0);
+        assert_eq!(a.top, 576.0);
+        assert_eq!(a.scale, 1.0);
+        assert_eq!(a.default_color, cosmic_text::Color::rgb(1, 2, 3));
+    }
+
+    fn fixture_hud() -> HudData {
+        let f = neopeek_dsp::Frame {
+            rms: [0.5, 0.25],
+            peak: [0.9, 0.4],
+            ..neopeek_dsp::Frame::default()
+        };
+        let settings = crate::views::ViewSettings::default();
+        let mut ms = crate::hud::MeterState::default();
+        let mut sm = crate::hud::FeatureSmooth::default();
+        HudData::assemble(
+            crate::hud::HudSources {
+                source_name: "alsa_output…monitor",
+                backend: "pulse",
+                adapter: "Vulkan",
+                rate: 48_000,
+                window_frames: 1024,
+                depth: 48,
+                fps: 60.0,
+                frame_ms: 16.6,
+                peak_hold_ms: crate::hud::PEAK_HOLD_MS,
+                settings: &settings,
+                latest: Some(&f),
+            },
+            &mut ms,
+            &mut sm,
+        )
+    }
+
+    /// Buffer ↔ text mapping regression: the 2026-10 run composed the
+    /// hints into the center-overlay buffer, so the (always-on) hint
+    /// blob rendered mid-screen and pressing `h` hid the *overlay*
+    /// instead. Canonical order: index 3 = overlay, 4 = hints.
+    #[test]
+    fn panel_texts_maps_overlay_to_index_3_and_hints_to_index_4() {
+        let hud = fixture_hud();
+        assert!(hud.overlay.is_empty(), "precondition: idle hud has no overlay");
+        let texts = panel_texts(&hud);
+        assert!(texts[3].is_empty(), "overlay slot must take the overlay text, got {:?}", texts[3]);
+        assert_eq!(texts[4], hints_text(), "hints slot must take the hints text");
+        assert!(texts[4].contains("h hints · H hud"));
     }
 }

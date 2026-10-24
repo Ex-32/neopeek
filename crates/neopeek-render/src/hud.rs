@@ -176,6 +176,14 @@ const BOTTOM_LINE_GAP: f32 = 2.0;
 /// factor, PageUp/PageDown depth).
 pub const HINT_LINES: usize = 3;
 
+/// Keybind-hints visibility: the number of hint lines actually rendered.
+/// Hidden hints contribute `0`, which (a) drops the hints TextArea from
+/// the areas list in hud_render and (b) lets the device-stats line
+/// anchor to the true bottom margin (`hud_text_anchors`).
+pub fn hint_lines_for(show_hints: bool) -> usize {
+    if show_hints { HINT_LINES } else { 0 }
+}
+
 /// Top-left anchor positions of the five HUD text panels, in **physical**
 /// pixels, computed from the current surface size, DPI scale and font
 /// metrics. Order: `[0]` feature panel, `[1]` perf column (top-right),
@@ -406,6 +414,7 @@ mod tests {
     #[test]
     fn anchors_match_tuned_defaults_at_scale_one() {
         let a = hud_text_anchors(800, 600, 1.0, FONT_PX, 1);
+        approx(a[0].0, 10.0, 1e-3);
         approx(a[2].0, 10.0, 1e-3);
         approx(a[2].1, 554.0, 1e-1); // device line
         approx(a[4].1, 576.0, 1e-1); // hints line
@@ -454,6 +463,52 @@ mod tests {
         let shown = hud_text_anchors(800, 600, 1.0, FONT_PX, HINT_LINES)[2].1;
         let hidden = hud_text_anchors(800, 600, 1.0, FONT_PX, 0)[2].1;
         assert!(hidden > shown, "hidden device line {} should sit lower (larger y) than with hints {}", hidden, shown);
+    }
+
+    /// Regression for "keybind hints render in the middle-right of the
+    /// screen": the hints panel (index 4) is a bottom-left block — its x
+    /// must be the left margin (never width-derived), its y the bottom
+    /// margin stack.
+    #[test]
+    fn hints_anchor_sits_at_left_margin_and_bottom_edge() {
+        let line_h = FONT_PX * 1.43;
+        for &w in &[640u32, 800, 1024, 1280, 1920] {
+            for &h in &[480u32, 600, 720, 1080] {
+                for scale in [0.75f32, 1.0, 1.25, 1.5, 2.0] {
+                    let a = hud_text_anchors(w, h, scale, FONT_PX, HINT_LINES);
+                    assert_eq!(a[4].0, HUD_MARGIN * scale, "hints x at scale {scale}: {:?}", a[4]);
+                    let want = h as f32 - (BOTTOM_PAD + HINT_LINES as f32 * line_h) * scale;
+                    approx(a[4].1, want, 1e-2);
+                }
+            }
+        }
+    }
+
+    /// All five anchors at a real, non-degenerate geometry (user-report
+    /// shape): individually on-surface and in the right quadrant/side.
+    #[test]
+    fn all_five_anchors_on_surface_at_tuned_geometry() {
+        let (w, h, scale) = (1920u32, 1080u32, 1.25f32);
+        let a = hud_text_anchors(w, h, scale, FONT_PX, HINT_LINES);
+        for (i, &(x, y)) in a.iter().enumerate() {
+            assert!(
+                x >= 0.0 && x <= w as f32 && y >= 0.0 && y <= h as f32,
+                "anchor {i} off-surface at 1920×1080 @1.25: ({x}, {y})"
+            );
+        }
+        assert_eq!(a[0].0, HUD_MARGIN * scale, "features: left margin");
+        assert!(a[1].0 > a[0].0, "perf column right of the feature panel");
+        assert_eq!(a[1].1, HUD_MARGIN * scale, "perf column: top margin");
+        approx(a[3].0, w as f32 / 2.0 - OVERLAY_HALF_W * scale, 1e-3);
+        approx(a[3].1, h as f32 / 2.0 - OVERLAY_TOP * scale, 1e-3);
+        assert!(a[4].1 > h as f32 / 2.0, "hints: bottom half");
+        assert_eq!(a[4].0, HUD_MARGIN * scale, "hints: left margin");
+
+        // Hidden hints: index 4's y drops to the true bottom edge and
+        // the device line slides down with it (see the hint_lines = 0
+        // test above) — `hud_text_anchors` itself takes 0 both ways.
+        assert!(hint_lines_for(true) == HINT_LINES);
+        assert_eq!(hint_lines_for(false), 0);
     }
 
     #[test]
