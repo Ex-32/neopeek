@@ -8,11 +8,20 @@ use glyphon::cosmic_text::{Family, Shaping};
 use glyphon::cosmic_text as cosmic_text;
 use glyphon::{Resolution, TextArea, TextBounds, TextRenderer, Viewport};
 
+use std::time::{Duration, Instant};
+
 use crate::hud::HudData;
 use neopeek_theme::Theme;
 
-/// Embedded OFL monospace font (single weight); cosmic-text's system
-/// fallback chain stays available for anything this lacks.
+/// Embedded OFL monospace font (single weight).
+///
+/// The HUD font database contains ONLY this face: `FontSystem::new()`
+/// walks fontconfig + every system font dir (and cosmic-text 0.19 can't
+/// even shape from `Source::File` faces — the scan buys nothing here).
+/// System-font fallback for codepoints the embedded font lacks is
+/// dropped; every codepoint the HUD strings emit (§ · × — … → − ≈ ≠ ≥ Ω
+/// plus ASCII) is verified present in this font's cmap, so nothing goes
+/// tofu in practice.
 const FONT_JETBRAINS_MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 
 /// Screen-space ortho matrix (pixel coordinates, y down), column-major.
@@ -233,7 +242,20 @@ pub struct HudUI {
     buffers: Vec<cosmic_text::Buffer>,
     /// Font size the buffers were built with (theme font_size, M7).
     font_px: f32,
+    /// Text currently shaped into each buffer; a panel is re-set (and
+    /// re-shaped) only when its composed text differs.
+    texts: [String; 5],
+    /// Wall-clock time of the next panel recomposition (4 Hz).
+    next_refresh: Instant,
 }
+
+/// How often the dynamic HUD panel texts are recomposed+re-shaped. The
+/// values behind them (fps EMA, frame-time EMA, smoothed features)
+/// change continuously, so every frame would otherwise hand cosmic-text
+/// fresh strings and re-run harfbuzz shaping on all five panels. 4 Hz
+/// keeps the readout legible; the per-frame cost of skipping is a
+/// few string comparisons.
+const PANEL_REFRESH: Duration = Duration::from_millis(250);
 
 impl HudUI {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
@@ -248,8 +270,15 @@ impl HudUI {
             wgpu::MultisampleState::default(),
             None,
         );
-        let mut font_system = cosmic_text::FontSystem::new();
-        font_system.db_mut().load_font_data(FONT_JETBRAINS_MONO.to_vec());
+        // fontdb starts empty and gets exactly one face — no fontconfig
+        // parse, no /usr/share/fonts walk, no per-face metadata for fonts
+        // this HUD never names (the old `FontSystem::new()` + reload
+        // scanned and registered every system font at startup).
+        let data: std::sync::Arc<dyn AsRef<[u8]> + Send + Sync> =
+            std::sync::Arc::new(FONT_JETBRAINS_MONO);
+        let font_system = cosmic_text::FontSystem::new_with_fonts(std::iter::once(
+            cosmic_text::fontdb::Source::Binary(data),
+        ));
         Self {
             atlas,
             renderer,
@@ -258,6 +287,8 @@ impl HudUI {
             font_system,
             buffers: HudUI::make_buffers(font_px),
             font_px,
+            texts: std::array::from_fn(|_| String::new()),
+            next_refresh: Instant::now(),
         }
     }
 
@@ -287,19 +318,44 @@ impl HudUI {
         theme: &Theme,
     ) {
         if (theme.hud.font_size - self.font_px).abs() > f32::EPSILON {
-            // Theme swap: rebuild the buffers at the new metrics.
+            // Theme swap: rebuild the buffers at the new metrics; force a
+            // recomposition so the new (empty) buffers fill immediately.
             self.font_px = theme.hud.font_size;
             self.buffers = HudUI::make_buffers(self.font_px);
+            self.texts = std::array::from_fn(|_| String::new());
+            self.next_refresh = Instant::now();
         }
         let (text, accent) = (
             Theme::rgb8(&theme.hud.text),
             Theme::rgb8(&theme.hud.accent),
         );
-        feature_panel(self, hud);
-        perf_panel(self, hud);
-        device_panel(self, hud);
-        hints_panel(self);
-        overlay_panel(self, hud);
+        // Recompose + re-set panel text at 4 Hz and only when the string
+        // actually changed: `set_text` marks the buffer dirty, so every
+        // per-frame re-set would re-run harfbuzz shaping on all five
+        // panels (values like the fps EMA change almost every frame).
+        // Untouched buffers early-out in `shape_until_scroll`.
+        let now = Instant::now();
+        if now >= self.next_refresh {
+            self.next_refresh = now + PANEL_REFRESH;
+            let texts = [
+                feature_text(hud),
+                perf_text(hud),
+                device_text(hud),
+                hints_text().to_owned(),
+                overlay_text(hud),
+            ];
+            let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
+            for (buf, (last, next)) in self
+                .buffers
+                .iter_mut()
+                .zip(self.texts.iter_mut().zip(texts))
+            {
+                if *last != next {
+                    buf.set_text(&next, &attrs, Shaping::Advanced, None);
+                    *last = next;
+                }
+            }
+        }
 
         for buf in self.buffers.iter_mut() {
             buf.shape_until_scroll(&mut self.font_system, false);
@@ -321,26 +377,45 @@ impl HudUI {
         let anchors =
             crate::hud::hud_text_anchors(width, height, scale, self.font_px, hint_lines);
         let hint_color = Theme::rgb8(&theme.hud.dim);
-        let ours: [Area; 4] = [
-            (&self.buffers[0], anchors[0], text),
-            (&self.buffers[1], anchors[1], text),
-            (&self.buffers[2], anchors[2], text),
-            (&self.buffers[3], anchors[3], accent),
-        ];
-        let mut areas: Vec<TextArea> = ours
-            .iter()
-            .map(|(buf, (left, top), color)| TextArea {
-                buffer: buf,
-                left: *left,
-                top: *top,
+        // Built as Option-flavored array — no per-frame Vec allocation.
+        let ours: [Option<TextArea>; 5] = [
+            Some(TextArea {
+                buffer: &self.buffers[0],
+                left: anchors[0].0,
+                top: anchors[0].1,
                 scale,
                 bounds: TextBounds::default(),
-                default_color: cosmic_text::Color::rgb(color.0, color.1, color.2),
+                default_color: cosmic_text::Color::rgb(text.0, text.1, text.2),
                 custom_glyphs: &[],
-            })
-            .collect();
-        if hud.show_hints {
-            areas.push(TextArea {
+            }),
+            Some(TextArea {
+                buffer: &self.buffers[1],
+                left: anchors[1].0,
+                top: anchors[1].1,
+                scale,
+                bounds: TextBounds::default(),
+                default_color: cosmic_text::Color::rgb(text.0, text.1, text.2),
+                custom_glyphs: &[],
+            }),
+            Some(TextArea {
+                buffer: &self.buffers[2],
+                left: anchors[2].0,
+                top: anchors[2].1,
+                scale,
+                bounds: TextBounds::default(),
+                default_color: cosmic_text::Color::rgb(text.0, text.1, text.2),
+                custom_glyphs: &[],
+            }),
+            Some(TextArea {
+                buffer: &self.buffers[3],
+                left: anchors[3].0,
+                top: anchors[3].1,
+                scale,
+                bounds: TextBounds::default(),
+                default_color: cosmic_text::Color::rgb(accent.0, accent.1, accent.2),
+                custom_glyphs: &[],
+            }),
+            hud.show_hints.then(|| TextArea {
                 buffer: &self.buffers[4],
                 left: anchors[4].0,
                 top: anchors[4].1,
@@ -348,8 +423,8 @@ impl HudUI {
                 bounds: TextBounds::default(),
                 default_color: cosmic_text::Color::rgb(hint_color.0, hint_color.1, hint_color.2),
                 custom_glyphs: &[],
-            });
-        }
+            }),
+        ];
         // Depth per glyph (metadata): 0.5 keeps text above the scene in the
         // screen-space pass (no depth state on this pipeline — unused).
         let _ = self.renderer.prepare(
@@ -358,7 +433,7 @@ impl HudUI {
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
-            areas,
+            ours.into_iter().flatten(),
             &mut self.swash,
         );
     }
@@ -368,23 +443,20 @@ impl HudUI {
     }
 }
 
-// The five text panels are small writers kept separate for readability.
+// The five panel texts are small pure composers kept separate for
+// readability; `prepare` gates them at 4 Hz and re-sets a buffer only
+// when its text changed.
 
-fn feature_panel(ui: &mut HudUI, hud: &HudData) {
-    let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
-    let text = hud.feature_lines.join("\n");
-    ui.buffers[0].set_text(&text, &attrs, Shaping::Advanced, None);
+fn feature_text(hud: &HudData) -> String {
+    hud.feature_lines.join("\n")
 }
 
-fn perf_panel(ui: &mut HudUI, hud: &HudData) {
-    let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
-    let text = format!("{:.0} fps\n{:.1} ms\n{}", hud.fps, hud.frame_ms, hud.adapter);
-    ui.buffers[1].set_text(&text, &attrs, Shaping::Advanced, None);
+fn perf_text(hud: &HudData) -> String {
+    format!("{:.0} fps\n{:.1} ms\n{}", hud.fps, hud.frame_ms, hud.adapter)
 }
 
-fn device_panel(ui: &mut HudUI, hud: &HudData) {
-    let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
-    let text = format!(
+fn device_text(hud: &HudData) -> String {
+    format!(
         "{} · {} · {} Hz · FFT {} (window {}, hop {:.1} ms) · depth {}",
         hud.source_name,
         hud.backend,
@@ -393,8 +465,7 @@ fn device_panel(ui: &mut HudUI, hud: &HudData) {
         hud.window_frames,
         hud.hop_ms,
         hud.depth,
-    );
-    ui.buffers[2].set_text(&text, &attrs, Shaping::Advanced, None);
+    )
 }
 
 /// The keybind dump lives in its own buffer so the theme's `dim` color
@@ -402,20 +473,16 @@ fn device_panel(ui: &mut HudUI, hud: &HudData) {
 /// single line overflowed the surface width and its tail was cut off,
 /// and the two-line version had no room left for the depth/log-factor
 /// binds.
-fn hints_panel(ui: &mut HudUI) {
-    let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
-    let text = concat!(
+fn hints_text() -> &'static str {
+    concat!(
         "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · F reset · X Y Z snap · 1 wave · 2 liss · 3 waterfall · S surface\n",
         "d dB · r rainbow · u i spacing · j k z-offset · PageUp PgDn depth · c v log-axis · - = spectrum · _ + wave · l L liss · < > width\n",
         "y liss-delay · f freeze · m mute · h hints · H hud · T theme · p print · q quit",
-    );
-    ui.buffers[4].set_text(text, &attrs, Shaping::Advanced, None);
+    )
 }
 
-fn overlay_panel(ui: &mut HudUI, hud: &HudData) {
-    let attrs = cosmic_text::Attrs::new().family(Family::Name("JetBrains Mono"));
-    let text = hud.overlay.join("\n");
-    ui.buffers[3].set_text(&text, &attrs, Shaping::Advanced, None);
+fn overlay_text(hud: &HudData) -> String {
+    hud.overlay.join("\n")
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
     format!(
         "neopeek settings\n\
          waterfall: {}, surface: {}, waveform: {}, lissajous: {}\n\
-         magnitude: {}, rainbow: {}, frozen: {}, muted: {}\n\
+         magnitude: {}, rainbow: {}, frozen: {}, muted: {}, auto_scale: {}\n\
          spacing: {:.4}, z_offset: {:+.3}, log_factor: {:.3}\n\
          depth: {} layers (history slices)\n\
          freq_scale: {:.3}, wave_scale: {:.3}, liss_scale: {:.3}\n\
@@ -28,6 +28,7 @@ pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
         flag(settings.rainbow),
         flag(settings.frozen),
         flag(settings.muted),
+        flag(settings.auto_scale),
         settings.spacing,
         settings.z_offset,
         settings.log_factor,
@@ -66,6 +67,7 @@ mod tests {
             "surface: off",
             "magnitude: linear",
             "muted: off",
+            "auto_scale: off",
             "log_factor: 1.500",
             "depth: 48 layers",
             "spacing: 0.1200",
@@ -87,10 +89,12 @@ mod tests {
         let mut c = Camera::default_vantage(800, 600);
         s.toggle_db();
         s.toggle_freeze();
+        s.toggle_auto_scale();
         c.orbit(1.0, 0.0);
         let txt = settings_string(&s, &c);
         assert!(txt.contains("magnitude: dB"));
         assert!(txt.contains("frozen: on"));
+        assert!(txt.contains("auto_scale: on"));
         assert!(txt.contains("azimuth = 1.000"));
     }
 }

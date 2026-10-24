@@ -49,6 +49,11 @@ pub fn handle_key(settings: &mut ViewSettings, key: &str) -> KeyPress {
             settings.toggle_rainbow();
             (false, Some(format!("rainbow = {}", on_off(settings.rainbow))))
         }
+        // Auto-scale waterfall height to the content (a)
+        "a" => {
+            settings.toggle_auto_scale();
+            (false, Some(format!("auto_scale = {}", on_off(settings.auto_scale))))
+        }
         // Width of the waveform/Lissajous quads (< / >)
         "<" => {
             settings.scale_strip_width(false);
@@ -195,6 +200,7 @@ const KEYBINDS: &[(&str, &str)] = &[
     ("d", "dB/linear magnitude"),
     ("S", "surface on/off"),
     ("r", "rainbow on/off"),
+    ("a", "auto-scale waterfall gain (content-adaptive)"),
     ("< >", "waveform/lissajous strip width"),
     ("y", "lissajous delay cycle"),
     ("u i", "slice spacing"),
@@ -412,6 +418,12 @@ mod tests {
         assert_eq!(handle_key(&mut s, "m").1.as_deref(), Some("muted = on"));
         assert_eq!(handle_key(&mut s, "m").1.as_deref(), Some("muted = off"));
         assert_eq!(handle_key(&mut s, "1").1.as_deref(), Some("waveform = off"));
+        // `a` auto-scale reports the NEW state like every toggle.
+        let mut sa = ViewSettings::default();
+        assert_eq!(handle_key(&mut sa, "a").1.as_deref(), Some("auto_scale = on"));
+        assert!(sa.auto_scale);
+        assert_eq!(handle_key(&mut sa, "a").1.as_deref(), Some("auto_scale = off"));
+        assert!(!sa.auto_scale);
         assert_eq!(handle_key(&mut s, "d").1.as_deref(), Some("magnitude = dB"));
         // Scale key reports the multiplied value.
         let mut f = ViewSettings::default();

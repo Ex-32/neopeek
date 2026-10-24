@@ -36,6 +36,7 @@ Mouse: left-drag orbit · shift-/middle-drag pan · wheel zoom.
 | `S` | filled-surface waterfall mode (theme `surface_ramp` colors) |
 | `d` | dB magnitude mode (theme `db_floor`/`db_ceil` window) |
 | `r` | rainbow depth colors |
+| `a` | auto-scale waterfall gain — sizes the waterfall height to the audio content each frame (tallest recent content ≈ 8/10 of the view; fast attack, slow release ≈ 1.4 s; silence holds the last gain). Off → the fixed default height returns immediately. |
 | `u` / `i` | slice z-spacing wider/narrower |
 | `j` / `k` | waterfall z-offset toward/away |
 | `PageUp` / `PageDown` | waterfall history layers (depth), 8…256 — also set at startup with `--depth <n>` (default 48) |

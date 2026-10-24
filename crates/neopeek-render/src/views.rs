@@ -59,6 +59,13 @@ pub struct ViewSettings {
     pub depth: usize,
     /// `-`/`=`: spectrum frequency scale (default 1.0).
     pub freq_scale: f32,
+    /// `a`: content-adaptive waterfall gain (default off). While on, the
+    /// renderer computes [`crate::autoscale::AutoScale::gain`] per frame
+    /// from the drained slices so the tallest recent content sits at
+    /// ~0.8 of the view height (fast attack, slow release); `-`/`=` still
+    /// zoom relative to the adaptive level. Off → the uniform gain snaps
+    /// to [`crate::views::DEFAULT_WATERFALL_GAIN`] immediately.
+    pub auto_scale: bool,
     /// `_`/`+`: waveform vertical scale (default 1.0 — sndpeek `time_scale`).
     pub wave_scale: f32,
     /// `l`/`L`: Lissajous scale (default 0.45).
@@ -89,6 +96,7 @@ impl Default for ViewSettings {
             log_factor: 1.5,
             depth: DEFAULT_DEPTH,
             freq_scale: 1.0,
+            auto_scale: false,
             wave_scale: 1.0,
             liss_scale: LISS_SCALE,
             strip_width: 0.004,
@@ -102,6 +110,13 @@ impl ViewSettings {
     pub fn scale_spectrum(&mut self, up: bool) {
         self.freq_scale = (self.freq_scale * if up { 1.01 } else { 0.99 })
             .clamp(0.01, 100.0);
+    }
+
+    /// `a`: on = the renderer drives the waterfall gain from the audio
+    /// content ([`crate::autoscale::AutoScale`]); off = the fixed
+    /// [`crate::views::DEFAULT_WATERFALL_GAIN`], restored immediately.
+    pub fn toggle_auto_scale(&mut self) {
+        self.auto_scale = !self.auto_scale;
     }
 
     /// `_`/`+`: waveform scale ×0.99 / ×1.01, clamped.
@@ -573,6 +588,12 @@ mod tests {
         assert!(!s.waterfall_on);
         s.toggle_lissajous();
         assert!(!s.lissajous_on);
+        // `a`: content-adaptive gain — default off, toggles back.
+        assert!(!s.auto_scale);
+        s.toggle_auto_scale();
+        assert!(s.auto_scale);
+        s.toggle_auto_scale();
+        assert!(!s.auto_scale);
     }
 
     fn approx(a: f32, b: f32) {

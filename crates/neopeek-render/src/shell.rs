@@ -63,6 +63,9 @@ pub struct Renderer {
     frame_cons: FrameCons,
     /// Newest frame; the waveform/Lissajous strips are built from it.
     latest: Option<Frame>,
+    /// `a` auto-scale state: fed per drained slice when the toggle is on
+    /// (crates/neopeek-render/src/autoscale.rs — pure, headless-tested).
+    autoscale: crate::autoscale::AutoScale,
     /// Scratch buffers reused every frame (no hot-path allocation).
     scratch_frames: Vec<Frame>,
     scratch_wave: Vec<LineVertex>,
@@ -190,6 +193,7 @@ impl Renderer {
             ramp_data: None,
             frame_cons,
             latest: None,
+            autoscale: crate::autoscale::AutoScale::new(),
             scratch_frames: Vec::with_capacity(FRAME_RING_FRAMES),
             scratch_wave: Vec::with_capacity(2 * WINDOW_FRAMES),
             scratch_liss: Vec::with_capacity(2 * WINDOW_FRAMES),
@@ -288,6 +292,18 @@ impl Renderer {
             let drained = frame_ring::drain_into(&mut self.frame_cons, &mut self.scratch_frames, MAX_FRAMES_PER_WAKE);
             for frame in &self.scratch_frames {
                 self.history.write_slice(&self.queue, frame);
+                // `a` auto-scale: fold this slice's max raw bin magnitude
+                // (zero-alloc iterator fold) into the adaptive state.
+                if settings.auto_scale {
+                    let max_bin = frame.bins.iter().copied().fold(0.0f32, f32::max);
+                    self.autoscale.observe(max_bin);
+                }
+            }
+            // Toggle off (or off-by-default): forget the adaptive state so
+            // a later re-arm starts from silence, and let the uniform fall
+            // back to the fixed default below.
+            if !settings.auto_scale {
+                self.autoscale.reset();
             }
             if drained > 0 {
                 if let Some(latest) = self.scratch_frames.last().copied() {
@@ -309,6 +325,14 @@ impl Renderer {
         self.waterfall.set_log_factor(&self.queue, &self.device, settings.log_factor);
 
         let vp = self.camera.view_proj();
+        // Waterfall gain: content-adaptive while `a` auto_scale is on
+        // (held through silence by `AutoScale`), fixed default otherwise —
+        // snapping back the moment the toggle goes off.
+        let gain = if settings.auto_scale {
+            self.autoscale.gain()
+        } else {
+            crate::views::DEFAULT_WATERFALL_GAIN
+        };
         let uniforms = WaterUniforms {
             view_proj: vp,
             head: self.history.head() as u32,
@@ -317,7 +341,7 @@ impl Renderer {
             z_offset: settings.z_offset,
             db: if settings.db { 1.0 } else { 0.0 },
             rainbow: if settings.rainbow { 1.0 } else { 0.0 },
-            gain: crate::views::DEFAULT_WATERFALL_GAIN,
+            gain,
             freq_scale: settings.freq_scale,
             drift,
             _align_hole: [0.0; 3],

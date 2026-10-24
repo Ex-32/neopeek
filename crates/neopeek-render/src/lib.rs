@@ -9,6 +9,7 @@
 //!   the shader, no CPU row shifting).
 //! - [`frame_ring`]: the SPSC `Frame` ring between the DSP thread and render.
 //! - [`views`]: view settings + waveform/Lissajous line-strip builders.
+//! - [`autoscale`]: the content-adaptive waterfall-gain state machine (`a`).
 //! - [`hud`]: headless HUD math (meters, features, overlays, `HudData`).
 //! - [`hud_render`]: the glyphon text pass + meter quad pipeline (M6).
 //! - [`shell`]: the winit/wgpu window shell + pipelines + per-frame draw.
@@ -21,6 +22,7 @@
 //! unit tests; the window path is validated by the user locally via the
 //! flake, per the no-GUI-testing rule in PLAN.md §9.
 
+pub mod autoscale;
 pub mod camera;
 pub mod dump;
 pub mod frame_ring;
