@@ -7,7 +7,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use neopeek_dsp::{Frame, FFT_SIZE};
+use neopeek_dsp::Frame;
 
 use crate::views::ViewSettings;
 
@@ -77,9 +77,10 @@ impl MeterState {
     }
 }
 
-/// Bins → Hz at the negotiated rate (centroid/rolloff use bin units).
-pub fn bin_to_hz(bins: f32, rate: u32) -> f64 {
-    bins as f64 * (rate as f64) / (FFT_SIZE as f64)
+/// Bins → Hz at the negotiated rate (centroid/rolloff use bin units);
+/// the FFT size is the producing engine's current rung (runtime-adjustable).
+pub fn bin_to_hz(bins: f32, rate: u32, fft_size: u32) -> f64 {
+    bins as f64 * (rate as f64) / (fft_size as f64)
 }
 
 /// The five panel features in fixed order (centroid, flux, RMS, 50%, 80%).
@@ -137,14 +138,15 @@ impl FeatureSmooth {
     }
 }
 
-/// The five feature-panel lines from smoothed values.
-pub fn fmt_features(vals: FeatureVals, rate: u32) -> [String; 5] {
+/// The five feature-panel lines from smoothed values (`fft_size` is the
+/// engine's current FFT rung — bin → Hz depends on it).
+pub fn fmt_features(vals: FeatureVals, rate: u32, fft_size: u32) -> [String; 5] {
     [
-        format!("centroid = {:.1} Hz", bin_to_hz(vals[0], rate)),
+        format!("centroid = {:.1} Hz", bin_to_hz(vals[0], rate, fft_size)),
         format!("flux = {:.3}", vals[1]),
         format!("RMS = {:.4}", vals[2]),
-        format!("50% rolloff = {:.1} Hz", bin_to_hz(vals[3], rate)),
-        format!("80% rolloff = {:.1} Hz", bin_to_hz(vals[4], rate)),
+        format!("50% rolloff = {:.1} Hz", bin_to_hz(vals[3], rate, fft_size)),
+        format!("80% rolloff = {:.1} Hz", bin_to_hz(vals[4], rate, fft_size)),
     ]
 }
 
@@ -332,6 +334,8 @@ pub struct HudSources<'a> {
     pub backend: &'a str,
     pub adapter: &'a str,
     pub rate: u32,
+    /// The engine's current FFT rung (runtime-adjustable `o`/`n`).
+    pub fft_size: u32,
     pub window_frames: u32,
     pub depth: usize,
     pub fps: f32,
@@ -360,7 +364,7 @@ impl HudData {
             backend: src.backend.to_owned(),
             adapter: src.adapter.to_owned(),
             rate,
-            fft_size: FFT_SIZE as u32,
+            fft_size: src.fft_size,
             window_frames: src.window_frames,
             hop_ms: src.window_frames as f32 / rate as f32 * 1000.0,
             depth: src.depth,
@@ -380,7 +384,7 @@ impl HudData {
                 [rms_to_db(f.rms[0]), rms_to_db(f.rms[1])]
             }),
             feature_lines: if src.latest.is_some() {
-                fmt_features(smooth.mean(), rate)
+                fmt_features(smooth.mean(), rate, src.fft_size)
             } else {
                 std::array::from_fn(|_| String::new())
             },
@@ -654,8 +658,10 @@ mod tests {
     #[test]
     fn hz_conversion() {
         // Bin 100 at 48 kHz / FFT 2048 = 2343.75 Hz
-        approx_f64(bin_to_hz(100.0, 48_000), 100.0 * 48_000.0 / 2048.0);
-        approx_f64(bin_to_hz(0.0, 48_000), 0.0);
+        approx_f64(bin_to_hz(100.0, 48_000, 2048), 100.0 * 48_000.0 / 2048.0);
+        approx_f64(bin_to_hz(0.0, 48_000, 2048), 0.0);
+        // The size is a parameter: bin 100 at fft 512 quadruples in Hz.
+        approx_f64(bin_to_hz(100.0, 48_000, 512), 100.0 * 48_000.0 / 512.0);
     }
 
     #[test]
@@ -668,13 +674,17 @@ mod tests {
             rolloff80: 20.0,
             ..Frame::default()
         };
-        let lines = fmt_features(frame_features(&f), 48_000);
+        let lines = fmt_features(frame_features(&f), 48_000, 2048);
         assert_eq!(lines.len(), 5);
         assert!(lines[0].starts_with("centroid = 2343.8 Hz"), "{}", lines[0]);
         assert!(lines[1].starts_with("flux = 2.000"));
         assert!(lines[2].starts_with("RMS = 0.0500"));
         assert!(lines[3].starts_with("50% rolloff = 234.4 Hz"));
         assert!(lines[4].starts_with("80% rolloff = 468.8 Hz"));
+        // Same bins at a different FFT rung scale to the new Hz mapping.
+        let lines = fmt_features(frame_features(&f), 48_000, 8192);
+        assert!(lines[0].starts_with("centroid = 585.9 Hz"), "{}", lines[0]);
+        assert!(lines[3].starts_with("50% rolloff = 58.6 Hz"), "{}", lines[3]);
     }
 
     #[test]
@@ -752,6 +762,7 @@ mod tests {
                 backend: "pulse",
                 adapter: "Vulkan",
                 rate: 48_000,
+                fft_size: 2048,
                 window_frames: 1024,
                 depth: 48,
                 fps: 60.0,
@@ -765,6 +776,7 @@ mod tests {
         );
         assert_eq!(hud.source_name, "alsa_output…monitor");
         assert_eq!(hud.backend, "pulse");
+        assert_eq!(hud.fft_size, 2048);
         approx(hud.hop_ms, 21.333, 0.01);
         approx(hud.rms_fill[0], rms_to_fill(0.5), 0.001);
         assert!(hud.feature_lines[0].contains("Hz"));
@@ -783,6 +795,7 @@ mod tests {
                 backend: "none",
                 adapter: "n/a",
                 rate: 48_000,
+                fft_size: 2048,
                 window_frames: 1024,
                 depth: 48,
                 fps: 0.0,

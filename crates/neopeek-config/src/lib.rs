@@ -5,6 +5,23 @@
 
 pub use clap::Parser;
 
+/// clap value parser for `--fft`: parses a `usize` and rejects values
+/// outside the [`neopeek_dsp::FFT_SIZES`] ladder with a clap error (the
+/// invalid value is reported with the whole valid set).
+fn parse_fft_size(s: &str) -> Result<usize, String> {
+    let value = s
+        .parse::<usize>()
+        .map_err(|_| format!("invalid FFT size {s:?}: not a number"))?;
+    if neopeek_dsp::is_fft_size(value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "invalid FFT size {value}: choose one of {:?}",
+            neopeek_dsp::FFT_SIZES
+        ))
+    }
+}
+
 /// neopeek: modern sndpeek-style audio visualizer.
 #[derive(Parser, Debug)]
 #[command(name = "neopeek", version, about)]
@@ -65,6 +82,12 @@ pub struct Cli {
     #[arg(long, value_name = "N", help = "waterfall history layers (8-256, default 48)")]
     pub depth: Option<usize>,
 
+    /// FFT length (power-of-two ladder 512…8192); `--fft` maps to the
+    /// same setting the `o`/`n` keys adjust at runtime. Non-ladder
+    /// values are rejected at parse time.
+    #[arg(long, value_name = "SIZE", value_parser = parse_fft_size, help = "FFT size (512-8192, default 2048)")]
+    pub fft: Option<usize>,
+
     /// Theme: built-in name (`Ember`/`Ice`/`Terminal`/`Cyber`) or path to a
     /// `.ron` theme file (PLAN.md §6.2). Missing/malformed → Ember.
     #[arg(long, value_name = "NAME|FILE", help = "theme name or .ron path")]
@@ -98,6 +121,12 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// FFT size; default 2048. Parsed through [`parse_fft_size`], which
+    /// rejects off-ladder values with a clap error.
+    pub fn fft(&self) -> usize {
+        self.fft.unwrap_or(neopeek_dsp::DEFAULT_FFT_SIZE)
+    }
+
     /// Waterfall history layers; default 48, clamped to 8…256 — the same
     /// clamp `neopeek_render::grid` applies to the runtime depth keys
     /// (kept literal here so neopeek-config stays dependency-light).
@@ -167,6 +196,32 @@ mod tests {
 
         assert!(Cli::try_parse_from(["neopeek", "--depth"]).is_err());
         assert!(Cli::try_parse_from(["neopeek", "--depth", "x"]).is_err());
+    }
+
+    /// `--fft`: ladder values parse, everything else is rejected with a
+    /// clap error, and the default accessor returns 2048.
+    #[test]
+    fn cli_parses_fft_ladder() {
+        let none = Cli::try_parse_from(["neopeek"]).unwrap();
+        assert_eq!(none.fft, None);
+        assert_eq!(none.fft(), 2048);
+
+        for size in neopeek_dsp::FFT_SIZES {
+            let cli = Cli::try_parse_from(["neopeek", "--fft", &size.to_string()]).unwrap();
+            assert_eq!(cli.fft, Some(size));
+            assert_eq!(cli.fft(), size);
+        }
+
+        // Not on the ladder → clap error (exit-time rejection).
+        for bad in ["3000", "64", "16384", "0", "x", "-512"] {
+            assert!(
+                Cli::try_parse_from(["neopeek", "--fft", bad]).is_err(),
+                "--fft {bad} must be rejected"
+            );
+        }
+        assert!(Cli::try_parse_from(["neopeek", "--fft"]).is_err());
+        // Diagnostics, not an action.
+        assert!(!Cli::try_parse_from(["neopeek", "--fft", "512"]).unwrap().has_cli_action());
     }
 
     /// `--stats-interval`: default off (0), N seconds parsed, 0 stays 0.

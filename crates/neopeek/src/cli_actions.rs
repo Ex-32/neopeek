@@ -95,8 +95,9 @@ fn dump_fft(cli: &Cli) -> Result<(), String> {
     // One capture+FFT code path, two formatters: `--dump-fft` prints the
     // verbose per-slice debug readout, `--print` sndpeek's parity format
     // (centroid/rolloff in Hz, plain floats; documented in README).
-    run_fft_capture(cli, cli.dump_fft_seconds(), |capture, frame| {
-        let hz = bins_to_hz(capture.rate);
+    let fft_size = cli.fft();
+    run_fft_capture(cli, cli.dump_fft_seconds(), move |capture, frame| {
+        let hz = bins_to_hz(capture.rate, fft_size);
         format!(
             "seq={} rms=({:.4},{:.4}) peak=({:.4},{:.4}) centroid={:.1}Hz flux={:.3} ro50={:.1}Hz ro80={:.1}Hz peak_bin={}",
             frame.seq,
@@ -104,14 +105,15 @@ fn dump_fft(cli: &Cli) -> Result<(), String> {
             frame.peak[0], frame.peak[1],
             hz(frame.centroid), frame.flux,
             hz(frame.rolloff50), hz(frame.rolloff80),
-            argmax(&frame.bins),
+            argmax(&frame.bins[..frame.bin_count as usize]),
         )
     })
 }
 
 fn print_features(cli: &Cli) -> Result<(), String> {
-    run_fft_capture(cli, cli.print_seconds(), |capture, frame| {
-        let hz = bins_to_hz(capture.rate);
+    let fft_size = cli.fft();
+    run_fft_capture(cli, cli.print_seconds(), move |capture, frame| {
+        let hz = bins_to_hz(capture.rate, fft_size);
         format!(
             "{:.1} {:.3} {:.4} {:.1} {:.1}",
             hz(frame.centroid),
@@ -123,9 +125,10 @@ fn print_features(cli: &Cli) -> Result<(), String> {
     })
 }
 
-/// Bins → Hz at the negotiated rate (HUD/shared conversion).
-fn bins_to_hz(rate: u32) -> impl Fn(f32) -> f64 + Copy {
-    move |bins: f32| bins as f64 * (rate as f64) / neopeek_dsp::FFT_SIZE as f64
+/// Bins → Hz at the negotiated rate (HUD/shared conversion); the FFT
+/// size is the `--fft` rung the pipeline runs at.
+fn bins_to_hz(rate: u32, fft_size: usize) -> impl Fn(f32) -> f64 + Copy {
+    move |bins: f32| bins as f64 * (rate as f64) / fft_size as f64
 }
 
 fn run_fft_capture(
@@ -138,8 +141,10 @@ fn run_fft_capture(
     let (capture, mut cons) = Capture::start(cli.device.clone())
         .map_err(|err| format!("capture unavailable: {err}"))?;
     eprintln!(
-        "running FFT pipeline for {seconds:.1} s from {} ({} Hz)",
-        capture.source_name, capture.rate
+        "running FFT pipeline for {seconds:.1} s from {} ({} Hz, fft {}) — dumping per-slice features…",
+        capture.source_name,
+        capture.rate,
+        cli.fft()
     );
 
     let window_bytes = neopeek_dsp::WINDOW_FRAMES * CHANNELS;

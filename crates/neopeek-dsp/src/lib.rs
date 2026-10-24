@@ -16,15 +16,6 @@ use rustfft::{FftPlanner, num_complex::Complex};
 
 /// Audio samples per analysis window/hop (sndpeek `SND_BUFFER_SIZE`).
 pub const WINDOW_FRAMES: usize = 1024;
-/// FFT length: the window zero-padded out from 1024 to 2048 (display path).
-///
-/// Runtime-adjustable since the FFT-size feature: the *engine* builds its
-/// plan for any size on the [`FFT_SIZES`] ladder (see [`Engine::new`] /
-/// [`Engine::set_fft_size`]); this constant remains only the default. It
-/// disappears once every consumer is migrated.
-pub const FFT_SIZE: usize = 2048;
-/// Magnitude bins per slice (`FFT_SIZE/2`).
-pub const BINS: usize = FFT_SIZE / 2;
 /// Largest bin count any supported FFT size can produce
 /// (`FFT_SIZES.last()/2 = 8192/2`).
 pub const MAX_BINS: usize = 4096;
@@ -499,7 +490,7 @@ mod tests {
     #[test]
     fn sine_sits_in_its_bin() {
         // f such that k = 40: f = 40·48000/2048 = 937.5 Hz
-        let f = 40.0 * RATE as f32 / FFT_SIZE as f32;
+        let f = 40.0 * RATE as f32 / DEFAULT_FFT_SIZE as f32;
         let mut engine = Engine::new(DEFAULT_FFT_SIZE);
         let frame = engine
             .process_window(&sine_interleaved(f, WINDOW_FRAMES))
@@ -513,7 +504,7 @@ mod tests {
 
     #[test]
     fn sine_centroid_matches_bin() {
-        let f = 100.0 * RATE as f32 / FFT_SIZE as f32;
+        let f = 100.0 * RATE as f32 / DEFAULT_FFT_SIZE as f32;
         let mut engine = Engine::new(DEFAULT_FFT_SIZE);
         let window = sine_interleaved(f, WINDOW_FRAMES);
         let mut frame = None;
@@ -594,7 +585,7 @@ mod tests {
     }
 
     fn poisoned_window(bad: f32, at: usize) -> Vec<f32> {
-        let mut window = sine_interleaved(40.0 * RATE as f32 / FFT_SIZE as f32, WINDOW_FRAMES);
+        let mut window = sine_interleaved(40.0 * RATE as f32 / DEFAULT_FFT_SIZE as f32, WINDOW_FRAMES);
         window[at] = bad;
         window
     }
@@ -606,7 +597,7 @@ mod tests {
         for _ in 0..4 {
             let f = engine
                 .process_window(&sine_interleaved(
-                    40.0 * RATE as f32 / FFT_SIZE as f32,
+                    40.0 * RATE as f32 / DEFAULT_FFT_SIZE as f32,
                     WINDOW_FRAMES,
                 ))
                 .expect("clean window");
@@ -652,7 +643,7 @@ mod tests {
             } else {
                 engine
                     .process_window(&sine_interleaved(
-                        40.0 * RATE as f32 / FFT_SIZE as f32,
+                        40.0 * RATE as f32 / DEFAULT_FFT_SIZE as f32,
                         WINDOW_FRAMES,
                     ))
                     .expect("clean window")
@@ -663,7 +654,7 @@ mod tests {
         // engine recovered, nothing is stuck frozen.
         let f = engine
             .process_window(&sine_interleaved(
-                40.0 * RATE as f32 / FFT_SIZE as f32,
+                40.0 * RATE as f32 / DEFAULT_FFT_SIZE as f32,
                 WINDOW_FRAMES,
             ))
             .expect("clean window");
@@ -674,7 +665,7 @@ mod tests {
     #[test]
     fn engine_sequence_counts() {
         let mut engine = Engine::new(DEFAULT_FFT_SIZE);
-        let f = 40.0 * RATE as f32 / FFT_SIZE as f32;
+        let f = 40.0 * RATE as f32 / DEFAULT_FFT_SIZE as f32;
         engine
             .process_window(&sine_interleaved(f, WINDOW_FRAMES))
             .unwrap();
@@ -717,7 +708,7 @@ mod tests {
         let frame = engine
             .process_window(&sine_interleaved(1000.0, WINDOW_FRAMES))
             .expect("window processed");
-        assert_eq!(frame.bin_count, (FFT_SIZE / 2) as u32);
+        assert_eq!(frame.bin_count, (DEFAULT_FFT_SIZE / 2) as u32);
         assert!(frame.bins[..frame.bin_count as usize].iter().any(|m| *m > 0.0));
         assert!(
             frame.bins[frame.bin_count as usize..].iter().all(|m| *m == 0.0),

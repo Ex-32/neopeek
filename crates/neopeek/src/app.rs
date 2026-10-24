@@ -3,6 +3,7 @@
 //! PLAN.md §4.3) and the audio pipeline (capture → DSP → frame ring).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
@@ -84,6 +85,10 @@ pub struct App {
     settings: ViewSettings,
     audio: Option<AudioPipeline>,
     device: Option<String>,
+    /// Live FFT-size request handed to the DSP thread (which owns the
+    /// `Engine`). Key presses store here and the dsp loop applies the
+    /// size between windows; the renderer side is synced directly.
+    fft_req: Arc<AtomicUsize>,
 
     // camera interaction state (M5)
     cursor: Option<PhysicalPosition<f64>>,
@@ -123,6 +128,7 @@ impl App {
         theme_arg: Option<String>,
         watch: bool,
         depth: usize,
+        fft_size: usize,
         idle_pause_secs: u64,
     ) -> Self {
         let (init, warn) = neopeek_theme::resolve(theme_arg.as_deref());
@@ -159,11 +165,15 @@ impl App {
                 let mut s = ViewSettings::default();
                 // Same clamp the runtime depth keys apply.
                 s.set_depth_clamped(depth);
+                // The CLI value was validated against the ladder at parse
+                // time; the setter keeps the same guarantee.
+                s.set_fft_size_exact(fft_size);
                 // CLI knob (`--idle-pause`, default 5, 0 = disabled); the
                 // dump reports the live value from here.
                 s.idle_pause = Duration::from_secs(idle_pause_secs);
                 s
             },
+            fft_req: Arc::new(AtomicUsize::new(fft_size)),
             audio: None,
             device,
             cursor: None,
@@ -181,6 +191,7 @@ impl App {
             watch_path,
         };
         tracing::info!(depth = app.settings.depth, "waterfall history depth");
+        tracing::info!(fft_size = app.settings.fft_size, window = neopeek_dsp::WINDOW_FRAMES, "FFT size");
         app.apply_theme_knobs();
         app
     }
@@ -267,6 +278,7 @@ impl App {
                     backend,
                     adapter: renderer.adapter_name(),
                     rate: renderer.rate(),
+                    fft_size: self.settings.fft_size as u32,
                     window_frames: WINDOW_FRAMES as u32,
                     depth: renderer.history_depth(),
                     fps: self.fps,
@@ -337,7 +349,7 @@ impl ApplicationHandler for App {
         match Renderer::new(window.clone(), frame_cons, self.settings.depth, self.settings.fft_size) {
             Ok(mut renderer) => {
                 renderer.set_theme_ramp(self.theme());
-                match AudioPipeline::start(self.device.take(), frame_prod) {
+                match AudioPipeline::start(self.device.take(), frame_prod, self.fft_req.clone()) {
                     Ok(audio) => {
                         renderer.set_rate(audio.rate());
                         self.audio = Some(audio);
@@ -471,10 +483,20 @@ impl ApplicationHandler for App {
                         // sndpeek parity: handlers report what they
                         // changed; we log it (INFO) — keys changing
                         // nothing (quit, unmapped) stay silent.
+                        let fft_before = self.settings.fft_size;
                         let (mut quit, mut desc) = handle_key(&mut self.settings, c);
                         let (camera_quit, camera_desc) = handle_camera_key(renderer_camera(self), c);
                         quit |= camera_quit;
                         desc = desc.or(camera_desc);
+                        // `o`/`n`: the FFT size lives in the renderer grid
+                        // buffers and the DSP thread's engine — sync both.
+                        if self.settings.fft_size != fft_before {
+                            if let Some(renderer) = self.renderer.as_mut() {
+                                renderer.set_fft_size(self.settings.fft_size);
+                            }
+                            self.fft_req
+                                .store(self.settings.fft_size, Ordering::Release);
+                        }
                         if let Some(d) = desc {
                             tracing::info!("{d}");
                             // A key that changed settings/camera opens an

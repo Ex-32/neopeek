@@ -9,7 +9,7 @@
 //! `dump_fft`'s staging cadence: when the producer is only partially
 //! filled the thread sleeps briefly; no busy spinning.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use std::thread::JoinHandle;
@@ -31,8 +31,13 @@ pub struct AudioPipeline {
 }
 
 impl AudioPipeline {
-    /// Starts the capture handshake and then the DSP loop.
-    pub fn start(device: Option<String>, frame_prod: FrameProd) -> Result<Self, CaptureError> {
+    /// Starts the capture handshake and then the DSP loop. `fft_req`
+    /// carries the live FFT-size request (`o`/`n` keys → dsp loop).
+    pub fn start(
+        device: Option<String>,
+        frame_prod: FrameProd,
+        fft_req: Arc<AtomicUsize>,
+    ) -> Result<Self, CaptureError> {
         let (capture, pcm_cons) = Capture::start(device)?;
         let rate = capture.rate;
         let stop = Arc::new(AtomicBool::new(false));
@@ -40,7 +45,7 @@ impl AudioPipeline {
             .name("neopeek-dsp".into())
             .spawn({
                 let stop = stop.clone();
-                move || dsp_loop(pcm_cons, frame_prod, stop)
+                move || dsp_loop(pcm_cons, frame_prod, stop, fft_req)
             })
             .map_err(|err| CaptureError::Handshake(err.to_string()))?;
         Ok(Self {
@@ -79,14 +84,26 @@ impl Drop for AudioPipeline {
     }
 }
 
-fn dsp_loop(mut pcm: PcmCons, mut prod: FrameProd, stop: Arc<AtomicBool>) {
-    let mut engine = Engine::new(neopeek_dsp::DEFAULT_FFT_SIZE);
+fn dsp_loop(
+    mut pcm: PcmCons,
+    mut prod: FrameProd,
+    stop: Arc<AtomicBool>,
+    fft_req: Arc<AtomicUsize>,
+) {
+    let mut engine = Engine::new(fft_req.load(Ordering::Acquire));
     let window_len = WINDOW_FRAMES * CHANNELS;
     let mut window_buf = [0.0f32; WINDOW_FRAMES * CHANNELS];
     let mut tmp = [0.0f32; 1024]; // pop scratch, reused
     let mut filled = 0usize;
 
     while !stop.load(Ordering::Acquire) {
+        // A queued size request (`o`/`n`) is applied between windows:
+        // plan rebuild is cached-cheap, and features restart with the
+        // new geometry (engine handles that internally).
+        let want = fft_req.load(Ordering::Acquire);
+        if engine.fft_size() != want {
+            engine.set_fft_size(want);
+        }
         let popped = pcm.pop_slice(&mut tmp);
         let space = window_len - filled;
         let take = popped.min(space);

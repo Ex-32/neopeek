@@ -8,3 +8,7 @@ authors.workspace = true
 
 [dependencies]
 clap.workspace = true
+# The FFT ladder is owned by the DSP crate; the CLI validates against the
+# same source of truth the runtime keys use (internal path dep, no new
+# external packages).
+neopeek-dsp.workspace = true

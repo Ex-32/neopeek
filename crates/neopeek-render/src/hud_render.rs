@@ -531,7 +531,7 @@ fn hints_text() -> &'static str {
     concat!(
         "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · F reset · X Y Z snap · 1 wave · 2 liss · 3 waterfall · S surface\n",
         "d dB · r rainbow · u i spacing · j k z-offset · PageUp PgDn depth · c v log-axis · - = spectrum · _ + wave · l L liss · < > width\n",
-        "y liss-delay · f freeze · m mute · h hints · H hud · T theme · p print · q quit",
+        "y liss-delay · o n fft-size · f freeze · m mute · h hints · H hud · T theme · p print · q quit",
     )
 }
 
@@ -673,6 +673,7 @@ mod tests {
                 backend: "pulse",
                 adapter: "Vulkan",
                 rate: 48_000,
+                fft_size: 2048,
                 window_frames: 1024,
                 depth: 48,
                 fps: 60.0,
@@ -698,6 +699,16 @@ mod tests {
         assert!(texts[3].is_empty(), "overlay slot must take the overlay text, got {:?}", texts[3]);
         assert_eq!(texts[4], hints_text(), "hints slot must take the hints text");
         assert!(texts[4].contains("h hints · H hud"));
+    }
+
+    /// The device panel's FFT readout is the *runtime* value (`o`/`n`
+    /// change it live); the window column stays the fixed 1024.
+    #[test]
+    fn device_text_reports_runtime_fft_size() {
+        let mut hud = fixture_hud();
+        assert!(device_text(&hud).contains("FFT 2048 (window 1024"), "{}", device_text(&hud));
+        hud.fft_size = 8192;
+        assert!(device_text(&hud).contains("FFT 8192 (window 1024"), "{}", device_text(&hud));
     }
 
     // Perf panel order: backend/GPU name first, fps second, frame

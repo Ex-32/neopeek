@@ -53,6 +53,7 @@ fn main() {
         cli.theme.clone(),
         cli.watch_theme,
         cli.depth(),
+        cli.fft(),
         cli.idle_pause,
     );
     if let Err(err) = event_loop.run_app(&mut app_state) {

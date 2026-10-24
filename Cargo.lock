@@ -1227,6 +1227,7 @@ name = "neopeek-config"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "neopeek-dsp",
 ]
 
 [[package]]

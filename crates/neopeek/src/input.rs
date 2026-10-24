@@ -86,6 +86,16 @@ pub fn handle_key(settings: &mut ViewSettings, key: &str) -> KeyPress {
             settings.adjust_depth(false);
             (false, Some(format!("depth = {} layers", settings.depth)))
         }
+        // FFT size ladder (o/n): up = more (interpolated) bins. The
+        // renderer grid rebuild + DSP plan swap are synced by app.rs.
+        "o" => {
+            settings.adjust_fft_size(true);
+            (false, Some(format!("fft_size = {}", settings.fft_size)))
+        }
+        "n" => {
+            settings.adjust_fft_size(false);
+            (false, Some(format!("fft_size = {}", settings.fft_size)))
+        }
         // Waterfall layout
         "u" => {
             settings.scale_spacing(true);
@@ -206,6 +216,7 @@ const KEYBINDS: &[(&str, &str)] = &[
     ("u i", "slice spacing"),
     ("j k", "waterfall z-offset"),
     ("PageUp PageDown", "waterfall history layers (depth)"),
+    ("o n", "FFT size up/down (512-8192 ladder)"),
     ("c v", "freq-axis log factor"),
     ("-", "spectrum scale down"),
     ("=", "spectrum scale up"),
@@ -366,6 +377,29 @@ mod tests {
         assert!(!handle_key(&mut s, "PageDown").0);
     }
 
+    /// `o`/`n` FFT-size keys: one ladder rung per press, clamped at the
+    /// ends, with the sndpeek-style INFO line.
+    #[test]
+    fn fft_size_keys_step_and_report() {
+        let mut s = ViewSettings::default();
+        let (_, desc) = handle_key(&mut s, "o");
+        assert_eq!(desc.as_deref(), Some("fft_size = 4096"));
+        assert_eq!(s.fft_size, 4096);
+        let (_, desc) = handle_key(&mut s, "n");
+        assert_eq!(desc.as_deref(), Some("fft_size = 2048"));
+        while s.fft_size < 8192 {
+            handle_key(&mut s, "o");
+        }
+        let (_, desc) = handle_key(&mut s, "o");
+        assert_eq!(desc.as_deref(), Some("fft_size = 8192"), "pinned at the ceiling");
+        while s.fft_size > 512 {
+            handle_key(&mut s, "n");
+        }
+        let (_, desc) = handle_key(&mut s, "n");
+        assert_eq!(desc.as_deref(), Some("fft_size = 512"), "pinned at the floor");
+        assert!(!handle_key(&mut s, "n").0, "not a quit key");
+    }
+
     /// `c`/`v` log-factor keys: scaled, clamped, and reported per-key.
     #[test]
     fn log_factor_keys_scale_and_clamp() {
@@ -450,7 +484,7 @@ mod tests {
     fn keybind_block_lists_every_key() {
         let block = keybind_block();
         // One row per entry, keys right-aligned before the action.
-        for needle in ["drag", "1", "p", "q / Esc", "camera reset", "mute", "PageUp PageDown", "c v"] {
+        for needle in ["drag", "1", "p", "q / Esc", "camera reset", "mute", "PageUp PageDown", "c v", "o n", "FFT size"] {
             assert!(block.contains(needle), "keybind block missing {needle:?}:\n{block}");
         }
         assert!(block.ends_with('\n'), "rows are newline-terminated");
