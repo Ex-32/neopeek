@@ -13,6 +13,7 @@ pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
          waterfall: {}, surface: {}, waveform: {}, lissajous: {}\n\
          magnitude: {}, rainbow: {}, frozen: {}, muted: {}\n\
          spacing: {:.4}, z_offset: {:+.3}, log_factor: {:.3}\n\
+         depth: {} layers (history slices)\n\
          freq_scale: {:.3}, wave_scale: {:.3}, liss_scale: {:.3}\n\
          strip_width: {:.4}, liss_delay: {}\n\
          hud: {}, keybinds: {}\n\
@@ -30,6 +31,7 @@ pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
         settings.spacing,
         settings.z_offset,
         settings.log_factor,
+        settings.depth,
         settings.freq_scale,
         settings.wave_scale,
         settings.liss_scale,
@@ -65,6 +67,7 @@ mod tests {
             "magnitude: linear",
             "muted: off",
             "log_factor: 1.500",
+            "depth: 48 layers",
             "spacing: 0.1200",
             "liss_scale: 0.450",
             "strip_width: 0.0040",

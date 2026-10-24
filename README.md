@@ -38,6 +38,7 @@ Mouse: left-drag orbit · shift-/middle-drag pan · wheel zoom.
 | `r` | rainbow depth colors |
 | `u` / `i` | slice z-spacing wider/narrower |
 | `j` / `k` | waterfall z-offset toward/away |
+| `PageUp` / `PageDown` | waterfall history layers (depth), 8…256 — also set at startup with `--depth <n>` (default 48) |
 | `-` / `=` | spectrum frequency axis ×0.99 / ×1.01 |
 | `_` / `+` | waveform vertical scale |
 | `l` / `L` | Lissajous figure scale |
@@ -82,7 +83,7 @@ and font size. Example — see `crates/neopeek-theme/assets/themes/Ember.ron`.
 Colors are `#rgb`, `#rrggbb` or `#rrggbbaa`.
 
 Built-ins: **Ember** (default — hand-tuned for contrast), **Ice** (blue/cyan),
-**Terminal** (high-contrast phosphor-CRT hacker green), **Cyber** (scarlet/cyan
+**Terminal** (high-contrast phosphor-CRT hacker green), **Cyber** (bright-pink
 waterfall, electric-yellow Lissajous).
 
 `--theme <name|path>`: an existing `.ron` path loads that file; otherwise

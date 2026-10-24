@@ -60,6 +60,11 @@ pub struct Cli {
     #[arg(long, help = "slow continuous yaw (sndpeek-style autospin)")]
     pub autospin: bool,
 
+    /// Waterfall history layers; `--depth` maps to the same setting the
+    /// `PageUp`/`PageDown` keys adjust at runtime.
+    #[arg(long, value_name = "N", help = "waterfall history layers (8-256, default 48)")]
+    pub depth: Option<usize>,
+
     /// Theme: built-in name (`Ember`/`Ice`/`Terminal`/`Cyber`) or path to a
     /// `.ron` theme file (PLAN.md §6.2). Missing/malformed → Ember.
     #[arg(long, value_name = "NAME|FILE", help = "theme name or .ron path")]
@@ -71,6 +76,13 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// Waterfall history layers; default 48, clamped to 8…256 — the same
+    /// clamp `neopeek_render::grid` applies to the runtime depth keys
+    /// (kept literal here so neopeek-config stays dependency-light).
+    pub fn depth(&self) -> usize {
+        self.depth.unwrap_or(48).clamp(8, 256)
+    }
+
     /// True when a non-visual CLI action was requested.
     pub fn has_cli_action(&self) -> bool {
         self.list_devices || self.dump_pcm.is_some() || self.dump_fft.is_some()
@@ -107,6 +119,27 @@ mod tests {
         assert_eq!(cli.backend, "pulse");
         assert!(!cli.has_cli_action());
         assert_eq!(cli.dump_seconds(), 2.0);
+    }
+
+    /// `--depth`: parsed and clamped to the 8…256 range like the runtime
+    /// `PageUp`/`PageDown` keys.
+    #[test]
+    fn cli_parses_depth_clamped() {
+        let none = Cli::try_parse_from(["neopeek"]).unwrap();
+        assert_eq!(none.depth(), 48);
+
+        let d = Cli::try_parse_from(["neopeek", "--depth", "96"]).unwrap();
+        assert_eq!(d.depth, Some(96));
+        assert_eq!(d.depth(), 96);
+
+        let low = Cli::try_parse_from(["neopeek", "--depth", "2"]).unwrap();
+        assert_eq!(low.depth(), 8);
+
+        let high = Cli::try_parse_from(["neopeek", "--depth", "999999"]).unwrap();
+        assert_eq!(high.depth(), 256);
+
+        assert!(Cli::try_parse_from(["neopeek", "--depth"]).is_err());
+        assert!(Cli::try_parse_from(["neopeek", "--depth", "x"]).is_err());
     }
 
     #[test]

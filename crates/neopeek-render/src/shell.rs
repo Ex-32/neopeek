@@ -78,7 +78,11 @@ impl Renderer {
         frame_ring::frame_pair()
     }
 
-    pub fn new(window: Arc<Window>, frame_cons: FrameCons) -> Result<Self, ShellError> {
+    pub fn new(
+        window: Arc<Window>,
+        frame_cons: FrameCons,
+        depth: usize,
+    ) -> Result<Self, ShellError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle().with_env());
 
         let surface = instance
@@ -139,10 +143,17 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        let depth = create_depth_view(&device, config.width, config.height);
+        let depth_stencil = create_depth_view(&device, config.width, config.height);
         let camera = Camera::default_vantage(config.width, config.height);
-        let history = History::new(&device);
-        let waterfall = Waterfall::new(&device, format, &history.view, wgpu::TextureFormat::Depth24Plus, 1.5);
+        let history = History::new(&device, depth);
+        let waterfall = Waterfall::new(
+            &device,
+            format,
+            &history.view,
+            wgpu::TextureFormat::Depth24Plus,
+            1.5,
+            depth,
+        );
         // Default view strip colors (sndpeek): waveform blue, lissajous yellow.
         let strip_verts = (2 * WINDOW_FRAMES) as u64; // quad strips: 2 verts/point
         let waveform = LinePipeline::new(&device, format, wgpu::TextureFormat::Depth24Plus, "waveform", strip_verts);
@@ -167,7 +178,7 @@ impl Renderer {
             device,
             queue,
             config,
-            depth,
+            depth: depth_stencil,
             camera,
             waterfall,
             waveform,
@@ -229,6 +240,19 @@ impl Renderer {
     /// History texture depth (waterfall slices).
     pub fn history_depth(&self) -> usize {
         self.history.texture.height() as usize
+    }
+
+    /// Applies a new history depth: rebuilds the history texture and the
+    /// waterfall grid/index/bind state. No-op when the depth already
+    /// matches (called on every depth key; only a change rebuilds).
+    pub fn set_depth(&mut self, depth: usize) {
+        if depth == self.history.texture.height() as usize {
+            return;
+        }
+        let new_history = History::new(&self.device, depth);
+        self.waterfall
+            .set_depth(&self.device, depth, &new_history.view);
+        self.history = new_history;
     }
 
     /// Uploads the theme's surface ramp — only when it differs from the

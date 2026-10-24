@@ -6,6 +6,7 @@
 //! per-frame allocation on the hot path).
 
 use neopeek_dsp::{Frame, WINDOW_FRAMES};
+use crate::grid::{DEFAULT_DEPTH, MAX_DEPTH, MIN_DEPTH};
 
 // Default vantage constants come from `crate::camera`; view constants here.
 pub const WAVE_Y: f32 = 0.7;
@@ -42,6 +43,10 @@ pub struct ViewSettings {
     pub z_offset: f32,
     /// Frequency-axis position precompute (see `crate::grid`), default 1.5.
     pub log_factor: f32,
+    /// `PageUp`/`PageDown` + `--depth`: waterfall history layers
+    /// (`grid::clamp_depth` bounds it; default `grid::DEFAULT_DEPTH`).
+    /// Changing it rebuilds the history texture + grid buffers.
+    pub depth: usize,
     /// `-`/`=`: spectrum frequency scale (default 1.0).
     pub freq_scale: f32,
     /// `_`/`+`: waveform vertical scale (default 1.0 — sndpeek `time_scale`).
@@ -72,6 +77,7 @@ impl Default for ViewSettings {
             spacing: 0.12,
             z_offset: 0.0,
             log_factor: 1.5,
+            depth: DEFAULT_DEPTH,
             freq_scale: 1.0,
             wave_scale: 1.0,
             liss_scale: LISS_SCALE,
@@ -110,6 +116,23 @@ impl ViewSettings {
     pub fn scale_lissajous(&mut self, up: bool) {
         self.liss_scale = (self.liss_scale * if up { 1.02 } else { 0.98 })
             .clamp(0.0, 4.0);
+    }
+
+    /// `PageUp`/`PageDown`: waterfall history layers ×1.25 / ×0.8,
+    /// clamped to `grid::MIN_DEPTH`…`MAX_DEPTH` (no pow-2 requirement).
+    pub fn adjust_depth(&mut self, more: bool) {
+        let next = if more {
+            (self.depth as f32 * 1.25).round() as usize
+        } else {
+            (self.depth as f32 * 0.8).round() as usize
+        };
+        self.depth = next.clamp(MIN_DEPTH, MAX_DEPTH);
+    }
+
+    /// Sets the history depth from a user request (CLI flag): same clamp
+    /// the runtime keys apply, so `--depth 9999` means 256 layers.
+    pub fn set_depth_clamped(&mut self, depth: usize) {
+        self.depth = depth.clamp(MIN_DEPTH, MAX_DEPTH);
     }
 
     /// `<`/`>`: waveform/Lissajous strip width ×1.25 / ×0.8, clamped.
@@ -238,10 +261,49 @@ mod tests {
         let s = ViewSettings::default();
         assert!((s.spacing - 0.12).abs() < 1e-9);
         assert!((s.log_factor - 1.5).abs() < 1e-9);
+        assert_eq!(s.depth, crate::grid::DEFAULT_DEPTH);
         assert!((s.liss_scale - 0.45).abs() < 1e-9);
         assert!((s.z_offset - 0.0).abs() < 1e-9);
         assert!(s.waveform_on && s.lissajous_on && s.waterfall_on);
         assert!(!s.db && !s.rainbow && !s.frozen);
+    }
+
+    /// `PageUp`/`PageDown` depth stepping ×1.25/×0.8 with the 8…256 clamp.
+    #[test]
+    fn adjust_depth_steps_and_clamps() {
+        let mut s = ViewSettings::default();
+        s.adjust_depth(true);
+        assert_eq!(s.depth, 60); // 48 × 1.25
+        while s.depth < crate::grid::MAX_DEPTH {
+            s.adjust_depth(true);
+        }
+        assert_eq!(s.depth, crate::grid::MAX_DEPTH, "256 is the ceiling");
+        s.adjust_depth(true); // pinned at max
+        assert_eq!(s.depth, 256);
+
+        while s.depth > crate::grid::MIN_DEPTH {
+            s.adjust_depth(false);
+        }
+        assert_eq!(s.depth, crate::grid::MIN_DEPTH, "8 is the floor");
+        s.adjust_depth(false); // pinned at min
+        assert_eq!(s.depth, 8);
+        // No pow-2 requirement; odd values survive a step fine.
+        let mut s = ViewSettings::default();
+        s.set_depth_clamped(91);
+        s.adjust_depth(true);
+        assert_eq!(s.depth, (91.0f32 * 1.25).round() as usize);
+    }
+
+    /// `--depth`: clamped the same way the runtime keys clamp.
+    #[test]
+    fn set_depth_clamped_uses_grid_range() {
+        let mut s = ViewSettings::default();
+        s.set_depth_clamped(0);
+        assert_eq!(s.depth, crate::grid::MIN_DEPTH);
+        s.set_depth_clamped(24);
+        assert_eq!(s.depth, 24);
+        s.set_depth_clamped(9_999);
+        assert_eq!(s.depth, crate::grid::MAX_DEPTH);
     }
 
     #[test]

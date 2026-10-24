@@ -19,7 +19,8 @@ fn on_off(on: bool) -> &'static str {
     }
 }
 
-/// Applies one logical character key press.
+/// Applies one logical character key press. Named keys (`PageUp`/`PageDown`)
+/// arrive through the same interface; `app.rs` routes them by string.
 pub fn handle_key(settings: &mut ViewSettings, key: &str) -> KeyPress {
     match key {
         // View toggles
@@ -61,6 +62,15 @@ pub fn handle_key(settings: &mut ViewSettings, key: &str) -> KeyPress {
         "y" => {
             settings.cycle_liss_delay();
             (false, Some(format!("liss_delay = {}", settings.liss_delay)))
+        }
+        // Waterfall depth (PageUp/PageDown arrive as named keys via app.rs)
+        "PageUp" => {
+            settings.adjust_depth(true);
+            (false, Some(format!("depth = {} layers", settings.depth)))
+        }
+        "PageDown" => {
+            settings.adjust_depth(false);
+            (false, Some(format!("depth = {} layers", settings.depth)))
         }
         // Waterfall layout
         "u" => {
@@ -180,6 +190,7 @@ const KEYBINDS: &[(&str, &str)] = &[
     ("y", "lissajous delay cycle"),
     ("u i", "slice spacing"),
     ("j k", "waterfall z-offset"),
+    ("PageUp PageDown", "waterfall history layers (depth)"),
     ("-", "spectrum scale down"),
     ("=", "spectrum scale up"),
     ("_", "waveform scale down"),
@@ -314,6 +325,31 @@ mod tests {
         assert!(!handle_key(&mut s, "p").0); // unmapped → stays
     }
 
+    /// Depth keys report the sndpeek-style per-key feedback line.
+    #[test]
+    fn depth_keys_log_layers_description() {
+        let mut s = ViewSettings::default();
+        let (_, desc) = handle_key(&mut s, "PageUp");
+        assert_eq!(desc.as_deref(), Some("depth = 60 layers"));
+        assert_eq!(s.depth, 60);
+        let (_, desc) = handle_key(&mut s, "PageDown");
+        assert_eq!(desc.as_deref(), Some("depth = 48 layers"));
+        assert_eq!(s.depth, 48);
+        // Clamped at both ends.
+        while s.depth < 256 {
+            handle_key(&mut s, "PageUp");
+        }
+        let (_, desc) = handle_key(&mut s, "PageUp");
+        assert_eq!(desc.as_deref(), Some("depth = 256 layers"));
+        while s.depth > 8 {
+            handle_key(&mut s, "PageDown");
+        }
+        let (_, desc) = handle_key(&mut s, "PageDown");
+        assert_eq!(desc.as_deref(), Some("depth = 8 layers"));
+        // Not quit keys.
+        assert!(!handle_key(&mut s, "PageDown").0);
+    }
+
     #[test]
     fn camera_keys() {
         // Default vantage ≈ M4 fixed eye
@@ -372,7 +408,7 @@ mod tests {
     fn keybind_block_lists_every_key() {
         let block = keybind_block();
         // One row per entry, keys right-aligned before the action.
-        for needle in ["drag", "1", "p", "q / Esc", "camera reset", "mute"] {
+        for needle in ["drag", "1", "p", "q / Esc", "camera reset", "mute", "PageUp PageDown"] {
             assert!(block.contains(needle), "keybind block missing {needle:?}:\n{block}");
         }
         assert!(block.ends_with('\n'), "rows are newline-terminated");

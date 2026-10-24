@@ -78,7 +78,13 @@ enum DragButton {
 }
 
 impl App {
-    pub fn new(device: Option<String>, autospin: bool, theme_arg: Option<String>, watch: bool) -> Self {
+    pub fn new(
+        device: Option<String>,
+        autospin: bool,
+        theme_arg: Option<String>,
+        watch: bool,
+        depth: usize,
+    ) -> Self {
         let (init, warn) = neopeek_theme::resolve(theme_arg.as_deref());
         if let Some(msg) = warn {
             tracing::warn!("{msg}");
@@ -109,7 +115,12 @@ impl App {
         let mut app = Self {
             window: None,
             renderer: None,
-            settings: ViewSettings::default(),
+            settings: {
+                let mut s = ViewSettings::default();
+                // Same clamp the runtime depth keys apply.
+                s.set_depth_clamped(depth);
+                s
+            },
             audio: None,
             device,
             cursor: None,
@@ -125,6 +136,7 @@ impl App {
             watch,
             watch_path,
         };
+        tracing::info!(depth = app.settings.depth, "waterfall history depth");
         app.apply_theme_knobs();
         app
     }
@@ -268,7 +280,7 @@ impl ApplicationHandler for App {
         // The ring lives frame-long; its producer half goes to the DSP
         // thread, the consumer to the renderer.
         let (frame_prod, frame_cons) = Renderer::frame_pair();
-        match Renderer::new(window.clone(), frame_cons) {
+        match Renderer::new(window.clone(), frame_cons, self.settings.depth) {
             Ok(mut renderer) => {
                 renderer.set_theme_ramp(self.theme());
                 match AudioPipeline::start(self.device.take(), frame_prod) {
@@ -370,6 +382,24 @@ impl ApplicationHandler for App {
                 }
                 match event.logical_key.as_ref() {
                     Key::Named(NamedKey::Escape) => event_loop.exit(),
+                    // PageUp/PageDown: waterfall history depth (named keys
+                    // carry no character, so route by name into the same
+                    // `handle_key` flow character keys use).
+                    Key::Named(named @ (NamedKey::PageUp | NamedKey::PageDown)) => {
+                        let c = match named {
+                            NamedKey::PageUp => "PageUp",
+                            _ => "PageDown",
+                        };
+                        let (_, desc) = handle_key(&mut self.settings, c);
+                        // Depth lives in the grid/texture buffers: sync the
+                        // renderer right after the settings change.
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            renderer.set_depth(self.settings.depth);
+                        }
+                        if let Some(d) = desc {
+                            tracing::info!("{d}");
+                        }
+                    }
                     Key::Character(c) => {
                         // `T`: theme cycle (App-level state, not settings).
                         if c == "T" {

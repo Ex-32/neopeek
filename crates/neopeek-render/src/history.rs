@@ -1,29 +1,29 @@
-//! The 1024×48 `R32Float` history texture ring (PLAN.md §4.1).
+//! The 1024×`depth` `R32Float` history texture ring (PLAN.md §4.1).
 //!
 //! One `write_texture` of the newest magnitude row (~4 KB) per slice; the
 //! ring wrap is resolved at *sample* time from a uniform head index
-//! (`grid::history_row`), so no CPU row shifting ever happens. The
-//! texture itself is allocated once.
+//! (`grid::history_row`), so no CPU row shifting ever happens. The texture
+//! is re-allocated when the depth setting changes.
 
 use neopeek_dsp::{BINS, Frame};
-
-use crate::grid::DEPTH;
 
 pub struct History {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    /// History layer count (texture height); `grid::clamp_depth` bounds it.
+    pub depth: usize,
     /// Index of the next row to be written (`grid::history_row` resolves
     /// slice→row from this).
     head: usize,
 }
 
 impl History {
-    pub fn new(device: &wgpu::Device) -> Self {
+    pub fn new(device: &wgpu::Device, depth: usize) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("neopeek-history"),
             size: wgpu::Extent3d {
                 width: BINS as u32,
-                height: DEPTH as u32,
+                height: depth as u32,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -38,6 +38,7 @@ impl History {
         Self {
             texture,
             view,
+            depth,
             head: 0,
         }
     }
@@ -68,13 +69,13 @@ impl History {
                 depth_or_array_layers: 1,
             },
         );
-        self.head = (self.head + 1) % DEPTH;
+        self.head = (self.head + 1) % self.depth;
     }
 
     /// Row index the shader will use to look up a slice `s` slices ago
     /// (0 = newest). Exposed for tests + diagnostics.
     pub fn row_of(&self, slice: usize) -> usize {
-        crate::grid::history_row(self.head, slice, DEPTH)
+        crate::grid::history_row(self.head, slice, self.depth)
     }
 
     pub fn head(&self) -> usize {
@@ -84,29 +85,37 @@ impl History {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::grid::history_row;
+
+    /// Ring-wrap invariant over `3n` writes for a layer count `n` (head
+    /// updates mirror `write_slice`: write at head, then advance).
+    fn walk_and_wrap(n: usize) {
+        let mut head = 0usize;
+        for i in 0..3 * n {
+            // Newest slice (s = 0) must land on the just-written row.
+            let just_written = (head + n - 1) % n;
+            assert_eq!(history_row(head, 0, n), just_written);
+            assert_eq!(history_row(head, 0, n), (i + n - 1) % n);
+            // One slice older than newest = the previous written row.
+            if i > 0 {
+                assert_eq!(history_row(head, 1, n), (i + n - 2) % n);
+            }
+            head = (head + 1) % n;
+        }
+        assert_eq!(head, 0, "full wrap restores the start head");
+    }
 
     #[test]
     fn write_slice_row_walks_and_wraps() {
-        // Stand-in for the GPU side: exercise the loop update + mapping
-        // the shader performs for every write. head updates mirror
-        // `write_slice` (write at head, then advance).
-        let mut head = 0usize;
-        for i in 0..3 * DEPTH {
-            // Newest slice (s = 0) must land on the just-written row.
-            let just_written = (head + DEPTH - 1) % DEPTH;
-            assert_eq!(history_row(head, 0, DEPTH), just_written);
-            assert_eq!(history_row(head, 0, DEPTH), (i + DEPTH - 1) % DEPTH);
-            // One slice older than newest = the previous written row.
-            if i > 0 {
-                assert_eq!(
-                    history_row(head, 1, DEPTH),
-                    (i + DEPTH - 2) % DEPTH
-                );
-            }
-            head = (head + 1) % DEPTH;
-        }
-        assert_eq!(head, 0, "full wrap restores the start head");
+        walk_and_wrap(crate::grid::DEFAULT_DEPTH);
+    }
+
+    /// Non-default (non-pow-2, odd) layer count must wrap identically —
+    /// the depth setting is runtime-adjustable.
+    #[test]
+    fn wrap_works_at_non_default_depth() {
+        walk_and_wrap(13);
+        walk_and_wrap(crate::grid::MIN_DEPTH);
+        walk_and_wrap(crate::grid::MAX_DEPTH);
     }
 }

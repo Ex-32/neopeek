@@ -2,7 +2,7 @@
 //! (PLAN.md §4.1, §4.2 pass 1). Per rendered frame the CPU work is one
 //! uniform write + a ~4 KB texture row per *new* slice — no allocation.
 
-use crate::grid::{self, DEPTH};
+use crate::grid::{self, DEFAULT_DEPTH};
 
 const SHADER: &str = include_str!("shaders/waterfall.wgsl");
 
@@ -51,7 +51,7 @@ impl WaterUniforms {
         Self {
             view_proj: [0.0; 16],
             head: 0,
-            depth: DEPTH as u32,
+            depth: DEFAULT_DEPTH as u32,
             spacing: 0.12,
             z_offset: 0.0,
             db: 0.0,
@@ -77,10 +77,16 @@ pub struct Waterfall {
     vb: wgpu::Buffer,
     ib: wgpu::Buffer,
     pub uniform: wgpu::Buffer,
+    /// Bind-group layout kept for `set_depth` (bind-group rebuild).
+    bgl: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
+    /// Theme ramp view kept for `set_depth` (bind-group rebuild).
+    ramp_view: wgpu::TextureView,
     index_count: u32,
     /// Grid rebuilds when this differs from the incoming `log_factor`.
     grid_log_factor: f32,
+    /// Grid layer count (matches the bound history texture height).
+    grid_depth: usize,
     /// Filled-surface mode (M8): triangle topology over the same grid.
     surface_pipeline: wgpu::RenderPipeline,
     surface_ib: wgpu::Buffer,
@@ -96,6 +102,7 @@ impl Waterfall {
         history_view: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         log_factor: f32,
+        depth: usize,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("neopeek-waterfall-shader"),
@@ -196,12 +203,12 @@ impl Waterfall {
             cache: None,
         });
 
-        // Static grid, allocated once here; written again only on a
-        // log-factor change (`set_log_factor`).
-        let (vb, ib, index_count) = create_grid_buffers(device, log_factor);
+        // Static grid, allocated once here; replaced only on a log-factor
+        // or depth change (`set_log_factor` / `set_depth`).
+        let (vb, ib, index_count) = create_grid_buffers(device, log_factor, depth);
 
         // Filled-surface mode (M8): same VB, triangle index buffer.
-        let surface_index_list = grid::surface_indices();
+        let surface_index_list = grid::surface_indices(depth);
         let surface_index_count = surface_index_list.len() as u32;
         let surface_ib = create_buffer_from(
             device,
@@ -230,24 +237,7 @@ impl Waterfall {
             mapped_at_creation: false,
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("neopeek-waterfall-bindgroup"),
-            layout: &bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(history_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&ramp_view),
-                },
-            ],
-        });
+        let bind_group = grid_bind_group(device, &bgl, &uniform, history_view, &ramp_view);
 
         // The filled-surface variant differs only in topology.
         let surface_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -290,9 +280,12 @@ impl Waterfall {
             vb,
             ib,
             uniform,
+            bgl,
             bind_group,
+            ramp_view,
             index_count,
             grid_log_factor: log_factor,
+            grid_depth: depth,
             surface_pipeline,
             surface_ib,
             surface_index_count,
@@ -327,10 +320,40 @@ impl Waterfall {
         if factor == self.grid_log_factor {
             return;
         }
-        let verts = grid::grid_vertices(factor);
+        let verts = grid::grid_vertices(factor, self.grid_depth);
         queue.write_buffer(&self.vb, 0, bytemuck::cast_slice(&verts));
         self.grid_log_factor = factor;
         let _ = device;
+    }
+
+    /// Rebuilds the grid + index buffers and rebinds the *new* history
+    /// texture view for a changed history depth. Called after swapping in
+    /// a fresh `History` — see `Renderer::set_depth`. The grid is built
+    /// with the current log factor, so the two knobs compose.
+    pub fn set_depth(
+        &mut self,
+        device: &wgpu::Device,
+        depth: usize,
+        history_view: &wgpu::TextureView,
+    ) {
+        if depth == self.grid_depth {
+            return;
+        }
+        let (vb, ib, index_count) = create_grid_buffers(device, self.grid_log_factor, depth);
+        let surface_index_list = grid::surface_indices(depth);
+        self.surface_ib = create_buffer_from(
+            device,
+            "neopeek-waterfall-surface-indices",
+            bytemuck::cast_slice(&surface_index_list),
+            wgpu::BufferUsages::INDEX,
+        );
+        self.surface_index_count = surface_index_list.len() as u32;
+        self.vb = vb;
+        self.ib = ib;
+        self.index_count = index_count;
+        self.bind_group =
+            grid_bind_group(device, &self.bgl, &self.uniform, history_view, &self.ramp_view);
+        self.grid_depth = depth;
     }
 
     pub fn upload_uniform(&self, queue: &wgpu::Queue, uniforms: &WaterUniforms) {
@@ -358,9 +381,10 @@ impl Waterfall {
 fn create_grid_buffers(
     device: &wgpu::Device,
     log_factor: f32,
+    depth: usize,
 ) -> (wgpu::Buffer, wgpu::Buffer, u32) {
-    let verts = grid::grid_vertices(log_factor);
-    let indices = grid::grid_indices();
+    let verts = grid::grid_vertices(log_factor, depth);
+    let indices = grid::grid_indices(depth);
     let index_count = indices.len() as u32;
     let vert_bytes: &[u8] = bytemuck::cast_slice(&verts);
     let index_bytes: &[u8] = bytemuck::cast_slice(&indices);
@@ -379,6 +403,35 @@ fn create_grid_buffers(
     );
 
     (vb, ib, index_count)
+}
+
+/// Uniform + history texture + theme ramp; rebuilt on `set_depth` because
+/// the history view (texture) is swapped.
+fn grid_bind_group(
+    device: &wgpu::Device,
+    bgl: &wgpu::BindGroupLayout,
+    uniform: &wgpu::Buffer,
+    history_view: &wgpu::TextureView,
+    ramp_view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("neopeek-waterfall-bindgroup"),
+        layout: bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(history_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(ramp_view),
+            },
+        ],
+    })
 }
 
 fn create_buffer_from(

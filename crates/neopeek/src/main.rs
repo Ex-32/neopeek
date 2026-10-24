@@ -39,8 +39,13 @@ fn main() {
     };
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
 
-    let mut app_state =
-        app::App::new(cli.device.clone(), cli.autospin, cli.theme.clone(), cli.watch_theme);
+    let mut app_state = app::App::new(
+        cli.device.clone(),
+        cli.autospin,
+        cli.theme.clone(),
+        cli.watch_theme,
+        cli.depth(),
+    );
     if let Err(err) = event_loop.run_app(&mut app_state) {
         tracing::error!("event loop error: {err}");
         std::process::exit(1);
