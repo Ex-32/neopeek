@@ -7,3 +7,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+serde = { workspace = true, features = ["derive"] }
+ron.workspace = true
+directories.workspace = true
+tracing.workspace = true

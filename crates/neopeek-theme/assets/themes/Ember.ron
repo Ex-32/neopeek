@@ -1,0 +1,17 @@
+// Ember (default): the M1–M6 hardcoded palette — sndpeek default family.
+(
+    name: "Ember",
+    background: "#0b0b10",
+    waterfall: (
+        past: "#66ff66",      // depth-dimmed green-ish
+        future: "#ffb366",    // rusty (filled-surface mode)
+        now_line: "#66ffff",  // cyan
+        rainbow: false,
+        db_floor: -80.0,
+        db_ceil: 0.0, // the M4 shader formula maps |X| = 8 → full height
+    ),
+    waveform: ( color: "#6666ff", width: 1.0 ),
+    lissajous: ( color: "#ffff80", scale: 0.45 ),
+    meters: ( grad_low: "#59ff4d", grad_high: "#ff4d4d", peak_hold_ms: 800 ),
+    hud: ( text: "#cfd3dc", dim: "#6b7280", font_size: 14.0, accent: "#e2542a" ),
+)

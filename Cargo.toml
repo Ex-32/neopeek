@@ -41,6 +41,7 @@ neopeek-audio = { path = "crates/neopeek-audio" }
 neopeek-config = { path = "crates/neopeek-config" }
 neopeek-dsp = { path = "crates/neopeek-dsp" }
 neopeek-render = { path = "crates/neopeek-render" }
+neopeek-theme = { path = "crates/neopeek-theme" }
 
 [profile.release]
 lto = "thin"
