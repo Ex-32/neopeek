@@ -1,17 +1,17 @@
-// Terminal: phosphor green on near-black, mono accent.
+// Terminal: high-contrast phosphor-CRT hacker green on near-black.
 (
     name: "Terminal",
-    background: "#050805",
+    background: "#030603",
     waterfall: (
-        past: "#33ff33",
-        future: "#80ff80",
-        now_line: "#e6ffe6",
+        past: "#39ff14",      // classic terminal green
+        future: "#148f10",    // darker green for the filled mode
+        now_line: "#b7ff2e",  // acid lime "now" edge
         rainbow: false,
         db_floor: -80.0,
         db_ceil: 0.0,
     ),
-    waveform: ( color: "#33ff33", width: 1.0 ),
-    lissajous: ( color: "#b3ffb3", scale: 0.45 ),
-    meters: ( grad_low: "#1f8c1f", grad_high: "#66ff66", peak_hold_ms: 800 ),
-    hud: ( text: "#33ff33", dim: "#1f8c1f", font_size: 14.0, accent: "#ccff33" ),
+    waveform: ( color: "#2aff6a", width: 1.0 ),
+    lissajous: ( color: "#00ff9c", scale: 0.45 ),
+    meters: ( grad_low: "#0f9d58", grad_high: "#ff3b30", peak_hold_ms: 800 ),
+    hud: ( text: "#7dff9e", dim: "#2e7d4f", font_size: 14.0, accent: "#ff5d5d" ),
 )

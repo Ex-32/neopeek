@@ -223,8 +223,9 @@ pub fn ramp_to_rgba8(stops: &[RampStop], width: usize) -> Vec<u8> {
 pub const EMBER_RON: &str = include_str!("../assets/themes/Ember.ron");
 pub const ICE_RON: &str = include_str!("../assets/themes/Ice.ron");
 pub const TERMINAL_RON: &str = include_str!("../assets/themes/Terminal.ron");
+pub const CYBER_RON: &str = include_str!("../assets/themes/Cyber.ron");
 
-pub const BUILTIN_NAMES: [&str; 3] = ["Ember", "Ice", "Terminal"];
+pub const BUILTIN_NAMES: [&str; 4] = ["Ember", "Ice", "Terminal", "Cyber"];
 
 /// Embedded RON for a built-in, case-insensitive.
 pub fn builtin_ron(name: &str) -> Option<&'static str> {
@@ -232,6 +233,7 @@ pub fn builtin_ron(name: &str) -> Option<&'static str> {
         "ember" => Some(EMBER_RON),
         "ice" => Some(ICE_RON),
         "terminal" => Some(TERMINAL_RON),
+        "cyber" => Some(CYBER_RON),
         _ => None,
     }
 }

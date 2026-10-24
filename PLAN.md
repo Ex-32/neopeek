@@ -442,7 +442,7 @@ extra framework. Font: one OFL-licensed monospace font embedded in `assets/fonts
 ```ron
 (
   name: "Ember",
-  background: "#000000",
+  background: "#050508",
   waterfall: (
     past: "#66ff66",          // depth-dimmed green-ish (sndpeek default family)
     future: "#ffb366",        // rusty
@@ -459,14 +459,15 @@ extra framework. Font: one OFL-licensed monospace font embedded in `assets/fonts
   waveform: ( color: "#6666ff", width: 1.0 ),
   lissajous: ( color: "#ffff80", scale: 0.45 ),
   meters: ( grad_low: "#2ecc71", grad_high: "#e74c3c", peak_hold_ms: 800 ),
-  hud: ( text: "#cfd3dc", dim: "#6b7280", font_size: 14.0, accent: "#e2542a" ),
+  hud: ( text: "#e6e9ef", dim: "#8a93a5", font_size: 14.0, accent: "#e2542a" ),
 )
 ```
 
 ### 6.2 Built-ins & loading
 
 Built-ins compiled in as embedded RON parsed through the same code path (`Ember`,
-`Ice` (blue/cyan), `Terminal` (green/mono) — final names in implementation).
+`Ice` (blue/cyan), `Terminal` (hacker green), `Cyber` (scarlet/cyan) — final
+names in implementation).
 Search order: `--theme <path|name>` → `$XDG_CONFIG_HOME/neopeek/themes/<name>.ron`
 → built-in default. Malformed/missing file → log warning, fall back (never crash
 at startup over a theme).

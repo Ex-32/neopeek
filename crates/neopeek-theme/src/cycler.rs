@@ -1,7 +1,7 @@
 //! Rotating through the built-ins plus a loaded custom theme (PLAN.md
 //! §6.2 "T": built-ins → custom → built-ins; wraps).
 
-/// Current built-in order: Ember → Ice → Terminal (custom appended).
+/// Current built-in order: Ember → Ice → Terminal → Cyber (custom appended).
 pub struct Cycler {
     pos: usize,
     entries: Vec<crate::LoadedTheme>,
@@ -75,6 +75,7 @@ mod tests {
         let mut c = Cycler::new(LoadedTheme::builtin("Ember"));
         assert_eq!(c.cycle().theme.name, "Ice");
         assert_eq!(c.cycle().theme.name, "Terminal");
+        assert_eq!(c.cycle().theme.name, "Cyber");
         assert_eq!(c.cycle().theme.name, "Ember"); // wrapped, Ember not duped
     }
 
@@ -105,6 +106,7 @@ mod tests {
         assert_eq!(c.cycle().theme.name, "Ember");
         assert_eq!(c.cycle().theme.name, "Ice");
         assert_eq!(c.cycle().theme.name, "Terminal");
+        assert_eq!(c.cycle().theme.name, "Cyber");
         assert_eq!(c.cycle().theme.name, "MyStuff");
         assert_eq!(c.cycle().theme.name, "Ember");
     }

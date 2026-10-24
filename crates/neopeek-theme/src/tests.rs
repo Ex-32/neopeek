@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use super::*;
 
-const M1_BG: Color = [0.0, 0.0, 0.0, 1.0];
+/// New Ember defaults are hand-tuned for contrast (not historical parity
+/// with the M1–M6 sndpeek palette); pinned here to catch accidental drift.
+const M1_BG: Color = [5.0 / 255.0, 5.0 / 255.0, 8.0 / 255.0, 1.0];
 const M4_PAST: Color = [0.4, 1.0, 0.4, 1.0];
 const M4_NOW: Color = [0.4, 1.0, 1.0, 1.0];
 const M5_WAVE: Color = [0.4, 0.4, 1.0, 1.0];
@@ -66,7 +68,7 @@ fn surface_ramp_optional_and_typed() {
 }
 
 #[test]
-fn ember_defaults_match_original_hardcoded_values() {
+fn ember_defaults_hand_tuned_regression_pin() {
     let t = Theme::parse(EMBER_RON).unwrap();
     assert_eq!(t.name, "Ember");
     assert!(hex_close(t.background, M1_BG), "{:?} vs {:?}", t.background, M1_BG);
@@ -79,10 +81,11 @@ fn ember_defaults_match_original_hardcoded_values() {
     assert_eq!(t.waterfall.db_ceil, 0.0);
     // M4/M5 scales.
     assert_eq!(t.lissajous.scale, 0.45);
-    // M6 HUD text (207, 211, 220) and hold.
-    assert_eq!(Theme::rgb8(&t.hud.text), (207, 211, 220));
+    // Hand-tuned HUD text (brightened for contrast) and hold.
+    assert_eq!(Theme::rgb8(&t.hud.text), (230, 233, 239));
+    assert_eq!(Theme::rgb8(&t.hud.dim), (138, 147, 165));
     assert_eq!(t.meters.peak_hold_ms, 800);
-    // M6 gradient endpoints.
+    // Gradient endpoints (unchanged green→red family).
     assert!(hex_close(t.meters.grad_low, [0.35, 1.0, 0.3, 1.0]), "grad_low");
     assert!(hex_close(t.meters.grad_high, [1.0, 0.3, 0.3, 1.0]), "grad_high");
 }

@@ -1,7 +1,9 @@
-// Ember (default): the M1–M6 hardcoded palette — sndpeek default family.
+// Ember (default): hand-tuned for contrast — background a slightly-deeper,
+// non-true-black anchor; HUD text brightened. Colors are tuned for legibility,
+// not historical parity with the original M1–M6 sndpeek palette.
 (
     name: "Ember",
-    background: "#000000",
+    background: "#050508",
     waterfall: (
         past: "#66ff66",      // depth-dimmed green-ish
         future: "#ffb366",    // rusty (filled-surface mode)
@@ -13,5 +15,5 @@
     waveform: ( color: "#6666ff", width: 1.0 ),
     lissajous: ( color: "#ffff80", scale: 0.45 ),
     meters: ( grad_low: "#59ff4d", grad_high: "#ff4d4d", peak_hold_ms: 800 ),
-    hud: ( text: "#cfd3dc", dim: "#6b7280", font_size: 14.0, accent: "#e2542a" ),
+    hud: ( text: "#e6e9ef", dim: "#8a93a5", font_size: 14.0, accent: "#e2542a" ),
 )

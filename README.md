@@ -69,20 +69,21 @@ and font size. Example — see `crates/neopeek-theme/assets/themes/Ember.ron`.
 ```ron
 (
     name: "Ember",
-    background: "#000000",
+    background: "#050508",
     waterfall: ( past: "#66ff66", future: "#ffb366", now_line: "#66ffff",
                  rainbow: false, db_floor: -80.0, db_ceil: 0.0 ),
     waveform: ( color: "#6666ff", width: 1.0 ),
     lissajous: ( color: "#ffff80", scale: 0.45 ),
     meters: ( grad_low: "#59ff4d", grad_high: "#ff4d4d", peak_hold_ms: 800 ),
-    hud: ( text: "#cfd3dc", dim: "#6b7280", font_size: 14.0, accent: "#e2542a" ),
+    hud: ( text: "#e6e9ef", dim: "#8a93a5", font_size: 14.0, accent: "#e2542a" ),
 )
 ```
 
 Colors are `#rgb`, `#rrggbb` or `#rrggbbaa`.
 
-Built-ins: **Ember** (default — the original sndpeek-family palette), **Ice**
-(blue/cyan), **Terminal** (phosphor green on near-black).
+Built-ins: **Ember** (default — hand-tuned for contrast), **Ice** (blue/cyan),
+**Terminal** (high-contrast phosphor-CRT hacker green), **Cyber** (scarlet/cyan
+waterfall, electric-yellow Lissajous).
 
 `--theme <name|path>`: an existing `.ron` path loads that file; otherwise
 `$XDG_CONFIG_HOME/neopeek/themes/<name>.ron` is tried; otherwise a built-in
