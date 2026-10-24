@@ -168,7 +168,9 @@ pub struct Engine {
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
     scratch: Vec<Complex<f32>>,
     input: Vec<Complex<f32>>,
-    mono: Vec<f32>,
+    /// Fixed-size mono downmix; converted to `[f32; WINDOW_FRAMES]` copies
+    /// into `Frame` with no heap traffic on the ~21 ms hot path.
+    mono: [f32; WINDOW_FRAMES],
     prev_bins: [f32; BINS],
     seq: u64,
     smooth_centroid: MovingAverage,
@@ -193,7 +195,7 @@ impl Engine {
             fft,
             scratch,
             input: vec![Complex::new(0.0, 0.0); FFT_SIZE],
-            mono: vec![0.0; WINDOW_FRAMES],
+            mono: [0.0; WINDOW_FRAMES],
             prev_bins: [0.0; BINS],
             seq: 0,
             smooth_centroid: MovingAverage::default(),
@@ -236,11 +238,10 @@ impl Engine {
         self.prev_bins = mags;
 
         self.seq += 1;
-        let mono: [f32; WINDOW_FRAMES] = self.mono.clone().try_into().expect("fixed window");
         Some(Frame {
             seq: self.seq,
             bins: mags,
-            mono,
+            mono: self.mono,
             rms,
             peak,
             centroid: self.smooth_centroid.push(c),
