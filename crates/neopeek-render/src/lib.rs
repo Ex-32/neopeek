@@ -9,6 +9,8 @@
 //!   the shader, no CPU row shifting).
 //! - [`frame_ring`]: the SPSC `Frame` ring between the DSP thread and render.
 //! - [`views`]: view settings + waveform/Lissajous line-strip builders.
+//! - [`hud`]: headless HUD math (meters, features, overlays, `HudData`).
+//! - [`hud_render`]: the glyphon text pass + meter quad pipeline (M6).
 //! - [`shell`]: the winit/wgpu window shell + pipelines + per-frame draw.
 //!
 //! Shaders live next to the sources in `shaders/` and are `include_str!`-ed
@@ -24,6 +26,8 @@ pub mod dump;
 pub mod frame_ring;
 pub mod grid;
 pub mod history;
+pub mod hud;
+pub mod hud_render;
 pub mod lines;
 pub mod shell;
 pub mod views;

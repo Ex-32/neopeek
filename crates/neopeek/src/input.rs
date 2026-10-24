@@ -28,6 +28,11 @@ pub fn handle_key(settings: &mut ViewSettings, key: &str) -> bool {
         "L" => settings.scale_lissajous(true),
         // Freeze: keeps rendering, stops ingesting (f/z)
         "f" | "z" => settings.toggle_freeze(),
+        // Mute: also stops ingesting (listener-only build)
+        "m" => settings.toggle_mute(),
+        // HUD
+        "h" => settings.toggle_hints(),
+        "H" => settings.toggle_hud(),
         // Quit
         "q" => return true,
         _ => {}
@@ -116,6 +121,20 @@ mod tests {
         assert!(s.frozen);
         handle_key(&mut s, "z");
         assert!(!s.frozen);
+        // m/h/H toggles (mute = pause ingestion, hints, whole HUD).
+        assert!(!s.muted);
+        handle_key(&mut s, "m");
+        assert!(s.muted);
+        handle_key(&mut s, "m");
+        assert!(!s.muted);
+        handle_key(&mut s, "h");
+        assert!(!s.show_hints);
+        handle_key(&mut s, "h");
+        assert!(s.show_hints);
+        handle_key(&mut s, "H");
+        assert!(!s.hud_on);
+        handle_key(&mut s, "H");
+        assert!(s.hud_on);
     }
 
     #[test]

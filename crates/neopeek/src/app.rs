@@ -12,11 +12,14 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+use neopeek_render::hud::{FeatureSmooth, HudData, HudSources, MeterState};
 use neopeek_render::shell::Renderer;
 use neopeek_render::views::ViewSettings;
 
 use crate::dsp::AudioPipeline;
 use crate::input::{handle_camera_key, handle_key};
+
+use neopeek_dsp::WINDOW_FRAMES;
 
 pub struct App {
     window: Option<Arc<Window>>,
@@ -31,6 +34,13 @@ pub struct App {
     modifiers: winit::keyboard::ModifiersState,
     autospin: bool,
     last_frame: Option<Instant>,
+    // HUD state (M6)
+    meter: MeterState,
+    smooth: FeatureSmooth,
+    /// Smoothed frames-per-second (0 until the first two frames).
+    fps: f32,
+    /// Smoothed frame time, ms.
+    frame_ms: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -52,6 +62,10 @@ impl App {
             modifiers: winit::keyboard::ModifiersState::empty(),
             autospin,
             last_frame: None,
+            meter: MeterState::default(),
+            smooth: FeatureSmooth::default(),
+            fps: 0.0,
+            frame_ms: 0.0,
         }
     }
 
@@ -120,8 +134,54 @@ impl ApplicationHandler for App {
                             .map_or(0.0, |t| now.duration_since(t).as_secs_f32());
                         renderer.camera_mut().spin(dt);
                     }
-                    self.last_frame = Some(now);
-                    renderer.render(&self.settings);
+                    // Frame-time stats for the HUD (EMA over redraws).
+                    if let Some(t) = self.last_frame.replace(now) {
+                        let ms = now.duration_since(t).as_secs_f32() * 1000.0;
+                        self.frame_ms = if self.frame_ms == 0.0 {
+                            ms
+                        } else {
+                            self.frame_ms * 0.9 + ms * 0.1
+                        };
+                        self.fps = 1000.0 / self.frame_ms.max(0.01);
+                    }
+                    // Assemble the HUD before render: the meter/peak-hold
+                    // state machines live in the binary, the drained
+                    // frames inside the renderer (copied out above). The
+                    // closure captures only disjoint `App` fields.
+                    let (adapter, rate, depth, latest) = (
+                        renderer.adapter_name().to_owned(),
+                        renderer.rate(),
+                        renderer.history_depth(),
+                        renderer.latest_frame().copied(),
+                    );
+                    let mut meter = self.meter;
+                    let mut smooth = self.smooth;
+                    let hud = self.settings.hud_on.then(|| {
+                        let (source_name, backend) = match self.audio.as_ref() {
+                            Some(audio) => (audio.source_name(), "pulse"),
+                            None => ("(no capture)", "none"),
+                        };
+                        HudData::assemble(
+                            HudSources {
+                                source_name,
+                                backend,
+                                adapter: &adapter,
+                                rate,
+                                window_frames: WINDOW_FRAMES as u32,
+                                depth,
+                                fps: self.fps,
+                                frame_ms: self.frame_ms,
+                                settings: &self.settings,
+                                latest: latest.as_ref(),
+                            },
+                            &mut meter,
+                            &mut smooth,
+                        )
+                    });
+                    self.meter = meter;
+                    self.smooth = smooth;
+                    let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
+                    renderer.render(&self.settings, hud.as_ref(), scale);
                 }
             }
             WindowEvent::CloseRequested => event_loop.exit(),

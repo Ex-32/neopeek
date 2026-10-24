@@ -23,8 +23,7 @@ use ringbuf::traits::{Consumer as _, Producer as _};
 
 pub struct AudioPipeline {
     /// Kept alive for its `Drop` (graceful capture-thread stop); its
-    /// diagnostics surface again with the HUD, M6.
-    #[allow(dead_code)]
+    /// diagnostics surface through `source_name`/`overflow`.
     capture: Capture,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -55,6 +54,11 @@ impl AudioPipeline {
     /// Negotiated capture rate (drives the drift animation).
     pub fn rate(&self) -> u32 {
         self.rate
+    }
+
+    /// Source name as negotiated by the capture handshake (HUD bottom line).
+    pub fn source_name(&self) -> &str {
+        &self.capture.source_name
     }
 }
 

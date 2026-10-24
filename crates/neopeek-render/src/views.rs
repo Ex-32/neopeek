@@ -29,6 +29,12 @@ pub struct ViewSettings {
     pub rainbow: bool,
     /// `f`/`z`: stop ingesting frames, keep rendering.
     pub frozen: bool,
+    /// `m`: also stop ingesting frames (listener-only build: mute = pause).
+    pub muted: bool,
+    /// `H`: HUD (text + meters) visible at all.
+    pub hud_on: bool,
+    /// `h`: the keybind-hint line inside the bottom HUD panel.
+    pub show_hints: bool,
     /// `u`/`i`: slice z-spacing (default 0.12), `j`/`k`: z-offset (±0.1).
     pub spacing: f32,
     pub z_offset: f32,
@@ -51,6 +57,9 @@ impl Default for ViewSettings {
             db: false,
             rainbow: false,
             frozen: false,
+            muted: false,
+            hud_on: true,
+            show_hints: true,
             spacing: 0.12,
             z_offset: 0.0,
             log_factor: 1.5,
@@ -110,6 +119,18 @@ impl ViewSettings {
     /// `f`/`z`: freeze toggle.
     pub fn toggle_freeze(&mut self) {
         self.frozen = !self.frozen;
+    }
+    /// `m`: mute (pause ingestion) toggle.
+    pub fn toggle_mute(&mut self) {
+        self.muted = !self.muted;
+    }
+    /// `H`: whole HUD toggle.
+    pub fn toggle_hud(&mut self) {
+        self.hud_on = !self.hud_on;
+    }
+    /// `h`: keybind-hint line toggle.
+    pub fn toggle_hints(&mut self) {
+        self.show_hints = !self.show_hints;
     }
 }
 

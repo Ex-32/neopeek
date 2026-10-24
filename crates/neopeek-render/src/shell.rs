@@ -17,6 +17,8 @@ use neopeek_dsp::{Frame, WINDOW_FRAMES};
 use crate::camera::Camera;
 use crate::frame_ring::{self, FrameCons, FrameProd, FRAME_RING_FRAMES};
 use crate::history::History;
+use crate::hud::HudData;
+use crate::hud_render::{HudQuads, HudUI};
 use crate::lines::LinePipeline;
 use crate::views::{LineVertex, ViewSettings};
 use crate::waterfall::{WaterUniforms, Waterfall};
@@ -58,6 +60,10 @@ pub struct Renderer {
     waveform: LinePipeline,
     lissajous: LinePipeline,
     history: History,
+    // HUD (M6): glyphon text + meter quads.
+    hud_quads: HudQuads,
+    hud_ui: HudUI,
+    adapter_name: String,
     // frame plumbing (DSP thread side is outside this crate)
     frame_cons: FrameCons,
     /// Newest frame; the waveform/Lissajous strips are built from it.
@@ -146,6 +152,10 @@ impl Renderer {
         let strip_verts = WINDOW_FRAMES as u64; // one strip ≤ 1024 verts
         let waveform = LinePipeline::new(&device, format, wgpu::TextureFormat::Depth24Plus, "waveform", strip_verts);
         let lissajous = LinePipeline::new(&device, format, wgpu::TextureFormat::Depth24Plus, "lissajous", strip_verts);
+        let adapter_info = adapter.get_info();
+        let adapter_name = format!("{} ({:?})", adapter_info.name, adapter_info.backend);
+        let hud_quads = HudQuads::new(&device, format);
+        let hud_ui = HudUI::new(&device, &queue, format);
 
         tracing::info!(
             width = config.width,
@@ -168,6 +178,9 @@ impl Renderer {
             waveform,
             lissajous,
             history,
+            hud_quads,
+            hud_ui,
+            adapter_name,
             frame_cons,
             latest: None,
             scratch_frames: Vec::with_capacity(FRAME_RING_FRAMES),
@@ -195,6 +208,26 @@ impl Renderer {
         &self.camera
     }
 
+    /// Negotiated rate, for the HUD assembly.
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    /// Newest drained frame, for the HUD assembly in the binary.
+    pub fn latest_frame(&self) -> Option<&Frame> {
+        self.latest.as_ref()
+    }
+
+    /// Adapter name + backend, HUD diagnostics.
+    pub fn adapter_name(&self) -> &str {
+        &self.adapter_name
+    }
+
+    /// History texture depth (waterfall slices).
+    pub fn history_depth(&self) -> usize {
+        self.history.texture.height() as usize
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
@@ -203,12 +236,15 @@ impl Renderer {
         self.depth = create_depth_view(&self.device, self.config.width, self.config.height);
     }
 
-    pub fn render(&mut self, settings: &ViewSettings) {
-        // Drain pending frames (FIFO, oldest first) unless frozen; each is
-        // appended to the history row ring. Even with no new frames we
-        // continue rendering so scale/camera changes stay live.
+    /// Draws one frame: the 3D scene pass, then the screen-space HUD pass
+    /// (`hud` may be `None` while the HUD toggle is off).
+    pub fn render(&mut self, settings: &ViewSettings, hud: Option<&HudData>, scale: f32) {
+        // Drain pending frames (FIFO, oldest first) unless frozen or
+        // muted; each is appended to the history row ring. Even with no
+        // new frames we continue rendering so scale/camera changes stay
+        // live.
         let now = Instant::now();
-        if !settings.frozen {
+        if !settings.frozen && !settings.muted {
             self.scratch_frames.clear();
             let drained = frame_ring::drain_into(&mut self.frame_cons, &mut self.scratch_frames, MAX_FRAMES_PER_WAKE);
             for frame in &self.scratch_frames {
@@ -307,6 +343,33 @@ impl Renderer {
                 self.lissajous.set(&self.queue, &vp, [1.0, 1.0, 0.5]);
                 self.lissajous.draw_strip(&mut pass, &self.queue, &self.scratch_liss);
             }
+        }
+
+        // Screen-space HUD pass (M6): meter quads first, text on top; no
+        // depth attachment, loading the scene's colors back. The binary
+        // passes `None` while the HUD toggle is off.
+        if let Some(hud) = hud {
+            let (width, height) = (self.config.width, self.config.height);
+            self.hud_quads.prepare(&self.queue, hud, width, height, scale);
+            self.hud_ui.prepare(&self.device, &self.queue, hud, width, height, scale);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("neopeek-hud"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.hud_quads.draw(&mut pass);
+            self.hud_ui.render(&mut pass);
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);

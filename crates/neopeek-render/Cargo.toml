@@ -12,5 +12,6 @@ bytemuck.workspace = true
 ringbuf.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+glyphon.workspace = true
 pollster.workspace = true
 tracing.workspace = true
