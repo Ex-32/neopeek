@@ -63,6 +63,15 @@ pub fn handle_key(settings: &mut ViewSettings, key: &str) -> KeyPress {
             settings.cycle_liss_delay();
             (false, Some(format!("liss_delay = {}", settings.liss_delay)))
         }
+        // Freq-axis log factor (c/v, sndpeek `g_log_factor` scaling)
+        "c" => {
+            settings.adjust_log_factor(true);
+            (false, Some(format!("log_factor = {:.3}", settings.log_factor)))
+        }
+        "v" => {
+            settings.adjust_log_factor(false);
+            (false, Some(format!("log_factor = {:.3}", settings.log_factor)))
+        }
         // Waterfall depth (PageUp/PageDown arrive as named keys via app.rs)
         "PageUp" => {
             settings.adjust_depth(true);
@@ -191,6 +200,7 @@ const KEYBINDS: &[(&str, &str)] = &[
     ("u i", "slice spacing"),
     ("j k", "waterfall z-offset"),
     ("PageUp PageDown", "waterfall history layers (depth)"),
+    ("c v", "freq-axis log factor"),
     ("-", "spectrum scale down"),
     ("=", "spectrum scale up"),
     ("_", "waveform scale down"),
@@ -350,6 +360,26 @@ mod tests {
         assert!(!handle_key(&mut s, "PageDown").0);
     }
 
+    /// `c`/`v` log-factor keys: scaled, clamped, and reported per-key.
+    #[test]
+    fn log_factor_keys_scale_and_clamp() {
+        let mut s = ViewSettings::default();
+        handle_key(&mut s, "c");
+        assert!((s.log_factor - 1.575).abs() < 1e-3, "got {}", s.log_factor);
+        while s.log_factor > 0.0 {
+            handle_key(&mut s, "v");
+        }
+        handle_key(&mut s, "v");
+        assert_eq!(s.log_factor, 0.0, "0 = fully linear, pinned at the floor");
+        handle_key(&mut s, "c");
+        assert!((s.log_factor - 0.05).abs() < 1e-9, "steps off exact zero");
+        while s.log_factor < 8.0 {
+            handle_key(&mut s, "c");
+        }
+        handle_key(&mut s, "c");
+        assert_eq!(s.log_factor, 8.0, "pinned at the ceiling");
+    }
+
     #[test]
     fn camera_keys() {
         // Default vantage ≈ M4 fixed eye
@@ -408,7 +438,7 @@ mod tests {
     fn keybind_block_lists_every_key() {
         let block = keybind_block();
         // One row per entry, keys right-aligned before the action.
-        for needle in ["drag", "1", "p", "q / Esc", "camera reset", "mute", "PageUp PageDown"] {
+        for needle in ["drag", "1", "p", "q / Esc", "camera reset", "mute", "PageUp PageDown", "c v"] {
             assert!(block.contains(needle), "keybind block missing {needle:?}:\n{block}");
         }
         assert!(block.ends_with('\n'), "rows are newline-terminated");

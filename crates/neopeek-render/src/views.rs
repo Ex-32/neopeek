@@ -118,6 +118,25 @@ impl ViewSettings {
             .clamp(0.0, 4.0);
     }
 
+    /// `c`/`v`: waterfall freq-axis log factor ×1.05 / ×0.95 (sndpeek
+    /// `g_log_factor` scaling), clamped to 0.0 (fully linear)…8.0. Below
+    /// 0.05 flattening snaps to exactly 0 (the linear axis — `v` pinned on
+    /// zeros can no longer be lifted, so `c` from 0 steps to 0.05). The
+    /// grid picks this up via the per-frame `Waterfall::set_log_factor`
+    /// rebuild in `shell::render`.
+    pub fn adjust_log_factor(&mut self, more_log: bool) {
+        if !more_log && self.log_factor < 0.05 {
+            self.log_factor = 0.0; // snap: exact linear axis
+            return;
+        }
+        let next = self.log_factor * if more_log { 1.05 } else { 0.95 };
+        self.log_factor = if more_log && self.log_factor == 0.0 {
+            0.05 // multiplicative scaling can't lift an exact zero
+        } else {
+            next.clamp(0.0, 8.0)
+        };
+    }
+
     /// `PageUp`/`PageDown`: waterfall history layers ×1.25 / ×0.8,
     /// clamped to `grid::MIN_DEPTH`…`MAX_DEPTH` (no pow-2 requirement).
     pub fn adjust_depth(&mut self, more: bool) {
@@ -304,6 +323,24 @@ mod tests {
         assert_eq!(s.depth, 24);
         s.set_depth_clamped(9_999);
         assert_eq!(s.depth, crate::grid::MAX_DEPTH);
+    }
+
+    /// `c`/`v` log-factor adjustments scale, clamp, and snap.
+    #[test]
+    fn adjust_log_factor_clamps() {
+        let mut s = ViewSettings::default();
+        s.adjust_log_factor(true);
+        assert!((s.log_factor - 1.575).abs() < 1e-3);
+        while s.log_factor > 0.0 {
+            s.adjust_log_factor(false);
+        }
+        assert_eq!(s.log_factor, 0.0, "0 = fully linear, pinned at the floor");
+        s.adjust_log_factor(true);
+        assert!((s.log_factor - 0.05).abs() < 1e-9, "steps off exact zero");
+        while s.log_factor < 8.0 {
+            s.adjust_log_factor(true);
+        }
+        assert_eq!(s.log_factor, 8.0, "pinned at the ceiling");
     }
 
     #[test]
