@@ -69,7 +69,7 @@ and font size. Example — see `crates/neopeek-theme/assets/themes/Ember.ron`.
 ```ron
 (
     name: "Ember",
-    background: "#0b0b10",
+    background: "#000000",
     waterfall: ( past: "#66ff66", future: "#ffb366", now_line: "#66ffff",
                  rainbow: false, db_floor: -80.0, db_ceil: 0.0 ),
     waveform: ( color: "#6666ff", width: 1.0 ),

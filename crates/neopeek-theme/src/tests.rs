@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use super::*;
 
-const M1_BG: Color = [0.043, 0.043, 0.063, 1.0];
+const M1_BG: Color = [0.0, 0.0, 0.0, 1.0];
 const M4_PAST: Color = [0.4, 1.0, 0.4, 1.0];
 const M4_NOW: Color = [0.4, 1.0, 1.0, 1.0];
 const M5_WAVE: Color = [0.4, 0.4, 1.0, 1.0];

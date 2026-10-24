@@ -442,7 +442,7 @@ extra framework. Font: one OFL-licensed monospace font embedded in `assets/fonts
 ```ron
 (
   name: "Ember",
-  background: "#0b0b10",
+  background: "#000000",
   waterfall: (
     past: "#66ff66",          // depth-dimmed green-ish (sndpeek default family)
     future: "#ffb366",        // rusty

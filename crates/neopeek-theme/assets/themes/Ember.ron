@@ -1,7 +1,7 @@
 // Ember (default): the M1–M6 hardcoded palette — sndpeek default family.
 (
     name: "Ember",
-    background: "#0b0b10",
+    background: "#000000",
     waterfall: (
         past: "#66ff66",      // depth-dimmed green-ish
         future: "#ffb366",    // rusty (filled-surface mode)
