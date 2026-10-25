@@ -212,7 +212,7 @@ const KEYBINDS: &[(&str, &str)] = &[
     ("1", "waveform on/off"),
     ("2", "lissajous on/off"),
     ("3 w", "waterfall on/off"),
-    ("4", "feature cursors (centroid + RMS) on/off"),
+    ("4", "feature cursors (centroid line + 25%/75% bars) on/off"),
     ("d", "dB/linear magnitude"),
     ("S", "surface on/off"),
     ("r", "rainbow on/off"),

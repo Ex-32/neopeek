@@ -33,7 +33,7 @@ Mouse: left-drag orbit · shift-/middle-drag pan · wheel zoom.
 | key | action |
 |-----|--------|
 | `1` / `2` / `3` (or `w`) | waveform / Lissajous / waterfall toggle — the Lissajous figure is drawn **coplanar with the waveform** (same x-y plane, lower-right of the scene: right of center, below the wave strip) so it faces the default camera instead of standing edge-on |
-| `4` | feature cursors on/off (sndpeek's feature overlay): a vertical line at the **spectral centroid** standing on the waterfall's newest history plane, and a horizontal line at the window's **RMS level** riding the waveform strip (L/R averaged, like the HUD readout). Colored by the theme's `cursor` field — all built-ins define one; custom themes without it fall back to sndpeek's overlay red |
+| `4` | feature cursors on/off (sndpeek's feature overlay): a full-height vertical line at the **spectral centroid** standing on the waterfall's newest history plane, flanked by two **half-height vertical bars** at the 25% and 75% spectral points (cumulative-magnitude crossings — flanking the centroid line at reduced height so the brackets read subordinate). Colored by the theme's `cursor` field — all built-ins define one; custom themes without it fall back to sndpeek's overlay red |
 | `S` | filled-surface waterfall mode: theme `surface_ramp` colors — **unless rainbow (`r`) is also on**, in which case the same height heatmap colors the surface (no depth dimming); the arriving plane keeps the theme now/future blend either way. Non-rainbow depth dimming keeps a floor: even the oldest slice stays at ≥ 35 % of its ramp color so the surface never fades fully into the background (line mode keeps the original full fade) |
 | `d` | dB magnitude mode (theme `db_floor`/`db_ceil` window) |
 | `r` | rainbow = **height heatmap**: color follows the curve's magnitude at each point — cool violet/blue at the floor, cyan/green mid, yellow → red at the crest (same mapping in linear and dB display modes; no depth dimming while on) |
@@ -99,7 +99,8 @@ RON files (PLAN §6.1): background, waterfall colors (`past`/`future`/
 `now_line`, optional `rainbow`, dB window, optional `surface_ramp` stops),
 waveform/lissajous color+scale, meter gradient + peak hold, HUD text colors
 and font size, and the optional `cursor` overlay color (the `4` feature
-cursors; omitted fields fall back to sndpeek's overlay red `#ff3333`).
+cursors — centroid line + quartile bars; omitted fields fall back to
+sndpeek's overlay red `#ff3333`).
 Example — see `crates/neopeek-theme/assets/themes/Ember.ron`.
 `surface_ramp` stops run dark (low magnitude) → bright (peak); themes
 without one fall back to a two-stop `past → future` gradient. The built-ins

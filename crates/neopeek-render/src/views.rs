@@ -19,6 +19,18 @@ pub const WAVE_Y: f32 = 0.7;
 /// not a ceiling for the spectrum.
 pub const CURSOR_TOP_Y: f32 = 2.0;
 
+/// Height of the 25%/75% quartile bars as a fraction of the centroid
+/// line's extent (they span `0…CURSOR_TOP_Y·QUARTILE_HEIGHT → 0…1.0`).
+/// Half the full-height line reads clearly subordinate — the quartiles
+/// mark where the spectral mass brackets the centroid, not the centroid
+/// itself — and stays proportional wherever `CURSOR_TOP_Y` changes.
+pub const QUARTILE_HEIGHT: f32 = 0.5;
+
+/// Brightness multiplier applied to the theme `cursor` color for the
+/// quartile bars so they read visually quieter than the full-height
+/// centroid line without introducing a second theme field.
+pub const QUARTILE_BRIGHTNESS: f32 = 0.65;
+
 /// Default waterfall uniform `gain` (sndpeek used 1.0). At 1.0 the linear
 /// mapping flings a typical monitor frame (max |X| ≈ 0.3 →
 /// y = 1.0·1.8·sqrt(25·0.3) ≈ 4.9) several times past the top of the view.
@@ -61,11 +73,13 @@ pub struct ViewSettings {
     pub lissajous_on: bool,
     pub waterfall_on: bool,
     /// `4`: feature-cursor overlay (sndpeek feature-overlay parity) —
-    /// the vertical spectral-centroid line on the waterfall and the
-    /// horizontal RMS level line on the waveform strip. Default **on**:
-    /// sndpeek drew the overlay on every frame unless `4` disabled it
-    /// (research doc: the overlay is one of the four things drawn on
-    /// every frame). Color comes from the theme (`cursor` field).
+    /// the vertical spectral-centroid line on the waterfall, flanked by
+    /// two smaller vertical bars at the 25%/75% spectral points
+    /// (quartile rolloffs). Default **on**: sndpeek drew the overlay on
+    /// every frame unless `4` disabled it (research doc: the overlay is
+    /// one of the four things drawn on every frame, and sndpeek's own
+    /// overlay carried a centroid line + rolloff markers). Color comes
+    /// from the theme (`cursor` field).
     pub cursors_on: bool,
     /// `d`: dB magnitude mode instead of linear.
     pub db: bool,
@@ -435,25 +449,43 @@ pub fn append_centroid_cursor(frame: &Frame, s: &ViewSettings, out: &mut Vec<Lin
     append_segment([x, 0.0, z], [x, CURSOR_TOP_Y, z], s, out);
 }
 
-/// Append the RMS level cursor (sndpeek's feature overlay, key `4`): a
-/// horizontal hairline across the waveform strip at the window's RMS
-/// level, `y = WAVE_Y + wave_scale · 2 · rms` — the same vertical mapping
-/// the waveform samples use, so the line tracks the strip's `_`/`+`
-/// scale keys and always sits inside the waveform's own amplitude range.
+/// Append the 25%/75% *quartile* cursors (sndpeek's feature overlay, key
+/// `4`): two vertical bars, smaller than the centroid line, standing at
+/// the 25% and 75% spectral points — the cumulative-magnitude crossings
+/// ([`Frame::rolloff25`]/[`Frame::rolloff75`], 4-frame smoothed, same
+/// smoothing path as the centroid) mapped through the same log-spaced
+/// axis as the waterfall grid (`normalized_position_at` — one bin
+/// position per bar, no per-frame axis allocation), so the bars always
+/// stand over the bins they mark whatever the runtime FFT size
+/// (`o`/`n`) or log factor (`c`/`v`).
 ///
-/// Channel combination: the **average** of the L/R window RMS — the same
-/// value the HUD feature panel and `--print` report
-/// (`(rms[0] + rms[1]) / 2`), and sndpeek's own stereo→mono averaging in
-/// the callback. Clamped to 0…1 (full-scale audio) so the line tops out
-/// at the waveform's maximum; it rides at or above the strip's silent
-/// line (y = 0.7 > the Lissajous region's top ≈ 0.68) for every level.
-pub fn append_rms_cursor(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVertex>) {
+/// Extent/placement: y spans `0…CURSOR_TOP_Y·QUARTILE_HEIGHT` (half the
+/// centroid line's height, see [`QUARTILE_HEIGHT`]), standing on the
+/// same newest *history* slice plane as the centroid cursor — one
+/// spacing behind the arriving plane, never in front of `z = −spacing`,
+/// so the bars never enter the Lissajous figure's plane.
+///
+/// The rolloffs arrive in bins; fractional values round to the nearest
+/// bin, out-of-range values clamp into the axis. Skipped when the frame
+/// carries no spectrum (`bin_count < 2` — the axis mapping divides by
+/// `bins − 1`).
+pub fn append_quartile_cursors(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVertex>) {
     if !s.cursors_on {
         return;
     }
-    let rms = (frame.rms[0] + frame.rms[1]) * 0.5;
-    let y = WAVE_Y + s.wave_scale * 2.0 * rms.clamp(0.0, 1.0);
-    append_segment([-WAVE_SPAN, y, 0.0], [WAVE_SPAN, y, 0.0], s, out);
+    let bins = frame.bin_count as usize;
+    if bins < 2 {
+        return;
+    }
+    let top = CURSOR_TOP_Y * QUARTILE_HEIGHT;
+    for rolloff in [frame.rolloff25, frame.rolloff75] {
+        let bin = (rolloff.round() as i64).clamp(0, bins as i64 - 1) as usize;
+        let x = crate::grid::x_from_normalized(crate::grid::normalized_position_at(
+            s.log_factor, bins, bin,
+        ));
+        let z = (s.z_offset - s.spacing).min(-s.spacing);
+        append_segment([x, 0.0, z], [x, top, z], s, out);
+    }
 }
 
 #[cfg(test)]
@@ -907,48 +939,88 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    /// RMS cursor: a horizontal line across the strip's x extent at the
-    /// waveform mapping of the averaged L/R RMS.
+    /// Quartile cursors: x maps through the grid's log-spaced axis for
+    /// the frame's bin count at rolloff 0.25 / 0.75; y spans half the
+    /// centroid extent (0…1.0); they stand on the same history plane as
+    /// the centroid cursor and never enter the Lissajous plane.
     #[test]
-    fn rms_cursor_rides_the_waveform_mapping() {
-        let mut f = Frame { rms: [0.5, 0.25], ..Frame::default() }; // avg 0.375
+    fn quartile_cursors_sit_at_the_mapped_rolloff_bins() {
+        let mut f = Frame { bin_count: 1024, ..Frame::default() };
+        // Two-tone style spacing — quartiles well apart so the two bars
+        // cannot collide in the test.
+        f.rolloff25 = 100.0;
+        f.rolloff75 = 700.0;
         let s = ViewSettings::default();
         let mut out = Vec::new();
-        append_rms_cursor(&f, &s, &mut out);
-        assert_eq!(out.len(), 4);
-        // Spans the waveform strip's x extent, on the waveform's plane.
-        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, -WAVE_SPAN);
-        approx((out[2].pos[0] + out[3].pos[0]) / 2.0, WAVE_SPAN);
-        approx(out[0].pos[2], 0.0);
-        // y = WAVE_Y + wave_scale·2·avg(rms).
-        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, WAVE_Y + 2.0 * 0.375);
-        // Above the Lissajous region's top even at full-scale audio.
-        f.rms = [1.0, 1.0];
+        append_quartile_cursors(&f, &s, &mut out);
+        assert_eq!(out.len(), 8, "two straight segments = 8 verts");
+        let axis = crate::grid::normalized_positions(s.log_factor, 1024);
+        let x25 = crate::grid::x_from_normalized(axis[100]);
+        let x75 = crate::grid::x_from_normalized(axis[700]);
+        // Segment order: 25% first, 75% second; each spans 0…1.0.
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, x25);
+        approx((out[2].pos[0] + out[3].pos[0]) / 2.0, x25);
+        approx((out[4].pos[0] + out[5].pos[0]) / 2.0, x75);
+        approx((out[6].pos[0] + out[7].pos[0]) / 2.0, x75);
+        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, 0.0);
+        approx((out[2].pos[1] + out[3].pos[1]) / 2.0, CURSOR_TOP_Y * QUARTILE_HEIGHT);
+        // Same z placement logic as the centroid cursor.
+        approx(out[0].pos[2], -0.12);
+        // Fractional (4-frame smoothed) rolloffs round to the nearest bin.
+        f.rolloff25 = 100.49;
         out.clear();
-        append_rms_cursor(&f, &s, &mut out);
-        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, WAVE_Y + 2.0);
-        // wave_scale flows through.
-        let mut s2 = ViewSettings::default();
-        s2.scale_waveform(true);
+        append_quartile_cursors(&f, &s, &mut out);
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, x25);
+        // Runtime FFT size: the mapping follows the frame's bin count
+        // (here 512 bins = the 1024-point FFT rung).
+        f.bin_count = 512;
+        f.rolloff25 = 50.0;
+        f.rolloff75 = 350.0;
         out.clear();
-        append_rms_cursor(&f, &s2, &mut out);
-        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, WAVE_Y + s2.wave_scale * 2.0);
+        append_quartile_cursors(&f, &s, &mut out);
+        let axis512 = crate::grid::normalized_positions(s.log_factor, 512);
+        approx(
+            (out[0].pos[0] + out[1].pos[0]) / 2.0,
+            crate::grid::x_from_normalized(axis512[50]),
+        );
+        approx(
+            (out[4].pos[0] + out[5].pos[0]) / 2.0,
+            crate::grid::x_from_normalized(axis512[350]),
+        );
+        // z_offset rides along, but never past the Lissajous plane.
+        let mut fwd = ViewSettings::default();
+        fwd.move_z_offset(false); // +0.1 toward the camera
+        out.clear();
+        append_quartile_cursors(&f, &fwd, &mut out);
+        approx(out[0].pos[2], -0.12);
+        // No spectrum this frame (bin_count < 2) → no cursor at all.
+        let silent = Frame::default();
+        out.clear();
+        append_quartile_cursors(&silent, &s, &mut out);
+        assert!(out.is_empty());
     }
 
-    /// Disabled (`4` off) → no cursor vertices at all.
+    /// Disabled (`4` off) → no cursor vertices at all (centroid or
+    /// quartile).
     #[test]
     fn cursors_disabled_produce_no_vertices() {
-        let f = Frame { bin_count: 1024, centroid: 100.0, rms: [0.3, 0.2], ..Frame::default() };
+        let f = Frame {
+            bin_count: 1024,
+            centroid: 100.0,
+            rolloff25: 50.0,
+            rolloff75: 150.0,
+            ..Frame::default()
+        };
         let mut s = ViewSettings::default();
         let mut out = Vec::new();
         append_centroid_cursor(&f, &s, &mut out);
-        append_rms_cursor(&f, &s, &mut out);
-        assert_eq!(out.len(), 8, "two straight segments");
+        append_quartile_cursors(&f, &s, &mut out);
+        assert_eq!(out.len(), 12, "three straight segments");
         s.toggle_cursors();
         assert!(!s.cursors_on);
         out.clear();
         append_centroid_cursor(&f, &s, &mut out);
-        append_rms_cursor(&f, &s, &mut out);
+        append_quartile_cursors(&f, &s, &mut out);
         assert!(out.is_empty(), "disabled → no vertices");
     }
 

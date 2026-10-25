@@ -102,8 +102,8 @@ pub struct Theme {
     pub meters: MetersTheme,
     pub hud: HudTheme,
     /// Feature-cursor overlay color (`4` toggle: the vertical
-    /// spectral-centroid line on the waterfall and the horizontal RMS
-    /// level line on the waveform strip — sndpeek's red feature overlay).
+    /// spectral-centroid line on the waterfall flanked by the two
+    /// smaller 25%/75% quartile bars — sndpeek's red feature overlay).
     /// Optional so custom user themes keep parsing without it; missing
     /// fields fall back to [`Theme::DEFAULT_CURSOR_COLOR`].
     #[serde(default, deserialize_with = "de_hex_opt")]
@@ -170,7 +170,7 @@ where
 impl Theme {
     /// Fallback feature-cursor overlay color when a theme defines no
     /// `cursor` field: sndpeek drew its feature overlay (the centroid
-    /// cursor + RMS bar) in red — `#ff3333` keeps that identity.
+    /// cursor + quartile bars) in red — `#ff3333` keeps that identity.
     pub const DEFAULT_CURSOR_COLOR: Color = [1.0, 0.2, 0.2, 1.0];
 
     /// Parses embedded-RON / file content; the single parse path used by
