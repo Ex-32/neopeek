@@ -11,7 +11,7 @@ pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
     format!(
         "neopeek settings\n\
          waterfall: {}, surface: {}, waveform: {}, lissajous: {}\n\
-         magnitude: {}, rainbow: {}, frozen: {}, muted: {}, auto_scale: {}\n\
+         magnitude: {}, rainbow: {}, frozen: {}, muted: {}, auto_scale: {}, cursors: {}\n\
          spacing: {:.4}, z_offset: {:+.3}, log_factor: {:.3}\n\
          depth: {} layers (history slices)\n\
          fft_size: {} (window {} fixed — bigger = finer interpolation)\n\
@@ -31,6 +31,7 @@ pub fn settings_string(settings: &ViewSettings, camera: &Camera) -> String {
         flag(settings.frozen),
         flag(settings.muted),
         flag(settings.auto_scale),
+        flag(settings.cursors_on),
         settings.spacing,
         settings.z_offset,
         settings.log_factor,
@@ -73,6 +74,7 @@ mod tests {
             "magnitude: linear",
             "muted: off",
             "auto_scale: off",
+            "cursors: on",
             "log_factor: 1.500",
             "depth: 48 layers",
             "fft_size: 2048",
@@ -97,12 +99,14 @@ mod tests {
         s.toggle_db();
         s.toggle_freeze();
         s.toggle_auto_scale();
+        s.toggle_cursors();
         s.set_fft_size_exact(8192);
         c.orbit(1.0, 0.0);
         let txt = settings_string(&s, &c);
         assert!(txt.contains("magnitude: dB"));
         assert!(txt.contains("frozen: on"));
         assert!(txt.contains("auto_scale: on"));
+        assert!(txt.contains("cursors: off"));
         assert!(txt.contains("fft_size: 8192"));
         assert!(txt.contains("azimuth = 1.000"));
     }

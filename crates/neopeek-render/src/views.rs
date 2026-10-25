@@ -13,6 +13,12 @@ use crate::grid::{DEFAULT_DEPTH, MAX_DEPTH, MIN_DEPTH};
 /// Default vantage constants come from `crate::camera`; view constants here.
 pub const WAVE_Y: f32 = 0.7;
 
+/// Top of the centroid cursor's vertical extent (world y). Just above the
+/// default-gain typical waterfall peak (≈ 1.73 at gain 0.35); `=` zoom and
+/// auto-scale can push content past it — the cursor marks the axis, it is
+/// not a ceiling for the spectrum.
+pub const CURSOR_TOP_Y: f32 = 2.0;
+
 /// Default waterfall uniform `gain` (sndpeek used 1.0). At 1.0 the linear
 /// mapping flings a typical monitor frame (max |X| ≈ 0.3 →
 /// y = 1.0·1.8·sqrt(25·0.3) ≈ 4.9) several times past the top of the view.
@@ -54,6 +60,13 @@ pub struct ViewSettings {
     pub waveform_on: bool,
     pub lissajous_on: bool,
     pub waterfall_on: bool,
+    /// `4`: feature-cursor overlay (sndpeek feature-overlay parity) —
+    /// the vertical spectral-centroid line on the waterfall and the
+    /// horizontal RMS level line on the waveform strip. Default **on**:
+    /// sndpeek drew the overlay on every frame unless `4` disabled it
+    /// (research doc: the overlay is one of the four things drawn on
+    /// every frame). Color comes from the theme (`cursor` field).
+    pub cursors_on: bool,
     /// `d`: dB magnitude mode instead of linear.
     pub db: bool,
     /// `S`: filled-surface waterfall mode (theme `surface_ramp` colors).
@@ -117,6 +130,7 @@ impl Default for ViewSettings {
             waveform_on: true,
             lissajous_on: true,
             waterfall_on: true,
+            cursors_on: true,
             db: false,
             surface: false,
             rainbow: false,
@@ -264,6 +278,10 @@ impl ViewSettings {
     pub fn toggle_waterfall(&mut self) {
         self.waterfall_on = !self.waterfall_on;
     }
+    /// `4`: feature-cursor overlay toggle.
+    pub fn toggle_cursors(&mut self) {
+        self.cursors_on = !self.cursors_on;
+    }
     pub fn toggle_db(&mut self) {
         self.db = !self.db;
     }
@@ -365,6 +383,79 @@ pub fn append_lissajous(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVerte
     }
 }
 
+/// One straight strip segment `a` → `b` (2 points → 4 verts), expanded
+/// perpendicular to the tangent by [`ViewSettings::strip_width`] exactly
+/// like the curved strips.
+fn append_segment(a: [f32; 3], b: [f32; 3], s: &ViewSettings, out: &mut Vec<LineVertex>) {
+    let hw = s.strip_width * 0.5;
+    let (tx, ty) = (b[0] - a[0], b[1] - a[1]);
+    let len = (tx * tx + ty * ty).sqrt().max(1e-9);
+    let (nx, ny) = (-ty / len, tx / len);
+    out.push(LineVertex { pos: [a[0] + nx * hw, a[1] + ny * hw, a[2]] });
+    out.push(LineVertex { pos: [a[0] - nx * hw, a[1] - ny * hw, a[2]] });
+    out.push(LineVertex { pos: [b[0] + nx * hw, b[1] + ny * hw, b[2]] });
+    out.push(LineVertex { pos: [b[0] - nx * hw, b[1] - ny * hw, b[2]] });
+}
+
+/// Append the spectral-centroid cursor (sndpeek's feature overlay, key
+/// `4`): a vertical line at the centroid bin's x, mapped through the same
+/// log-spaced axis as the waterfall grid
+/// ([`crate::grid::normalized_position_at`] — one bin position, no
+/// per-frame axis allocation), so the line always stands over the bin it
+/// marks whatever the runtime FFT size (`o`/`n`) or log factor (`c`/`v`).
+///
+/// Extent/placement: y spans `0…[`CURSOR_TOP_Y`]` (the spectrum's floor
+/// up to just past the default-gain typical peak), matching sndpeek's
+/// full-height red line. It stands on the newest *history* slice plane —
+/// one [`ViewSettings::spacing`] step behind the arriving plane, but
+/// never in front of `z = −spacing` even when `j`/`k` push the grid
+/// toward the camera — because the Lissajous figure is coplanar with the
+/// arriving plane (`z = z_offset`, x ≈ 0.25…1.15): the offset keeps the
+/// cursor out of the figure's plane entirely, and it rides the
+/// waterfall's `z_offset`/`spacing` keys with the rest of the grid.
+///
+/// The centroid arrives in bins ([`Frame::centroid`], 4-frame smoothed);
+/// fractional values round to the nearest bin, out-of-range values clamp
+/// into the axis. Skipped when the frame carries no spectrum
+/// (`bin_count < 2` — the axis mapping divides by `bins − 1`).
+pub fn append_centroid_cursor(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVertex>) {
+    if !s.cursors_on {
+        return;
+    }
+    let bins = frame.bin_count as usize;
+    if bins < 2 {
+        return;
+    }
+    let bin = (frame.centroid.round() as i64).clamp(0, bins as i64 - 1) as usize;
+    let x = crate::grid::x_from_normalized(crate::grid::normalized_position_at(
+        s.log_factor, bins, bin,
+    ));
+    // z_offset rides along, but never past the Lissajous plane (z = 0).
+    let z = (s.z_offset - s.spacing).min(-s.spacing);
+    append_segment([x, 0.0, z], [x, CURSOR_TOP_Y, z], s, out);
+}
+
+/// Append the RMS level cursor (sndpeek's feature overlay, key `4`): a
+/// horizontal hairline across the waveform strip at the window's RMS
+/// level, `y = WAVE_Y + wave_scale · 2 · rms` — the same vertical mapping
+/// the waveform samples use, so the line tracks the strip's `_`/`+`
+/// scale keys and always sits inside the waveform's own amplitude range.
+///
+/// Channel combination: the **average** of the L/R window RMS — the same
+/// value the HUD feature panel and `--print` report
+/// (`(rms[0] + rms[1]) / 2`), and sndpeek's own stereo→mono averaging in
+/// the callback. Clamped to 0…1 (full-scale audio) so the line tops out
+/// at the waveform's maximum; it rides at or above the strip's silent
+/// line (y = 0.7 > the Lissajous region's top ≈ 0.68) for every level.
+pub fn append_rms_cursor(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVertex>) {
+    if !s.cursors_on {
+        return;
+    }
+    let rms = (frame.rms[0] + frame.rms[1]) * 0.5;
+    let y = WAVE_Y + s.wave_scale * 2.0 * rms.clamp(0.0, 1.0);
+    append_segment([-WAVE_SPAN, y, 0.0], [WAVE_SPAN, y, 0.0], s, out);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +506,7 @@ mod tests {
         assert!((s.liss_scale - 0.45).abs() < 1e-9);
         assert!((s.z_offset - 0.0).abs() < 1e-9);
         assert!(s.waveform_on && s.lissajous_on && s.waterfall_on);
+        assert!(s.cursors_on, "sndpeek drew the feature overlay by default");
         assert!(!s.db && !s.rainbow && !s.frozen);
     }
 
@@ -744,6 +836,122 @@ mod tests {
         approx(s.z_offset, -19.9);
     }
 
+    /// Centroid cursor: x maps through the grid's log-spaced axis for the
+    /// frame's bin count; y spans 0…CURSOR_TOP_Y; it stands one spacing
+    /// behind the arriving plane and never enters the Lissajous plane.
+    #[test]
+    fn centroid_cursor_sits_at_the_mapped_bin_x() {
+        let mut f = Frame { bin_count: 1024, ..Frame::default() }; // the default 2048-point FFT
+        f.centroid = 0.0;
+        let s = ViewSettings::default();
+        let mut out = Vec::new();
+        append_centroid_cursor(&f, &s, &mut out);
+        assert_eq!(out.len(), 4, "one straight segment = 2 points = 4 verts");
+        // Bin 0 → the axis' left edge; vertical extent 0…CURSOR_TOP_Y.
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, -1.8);
+        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, 0.0);
+        approx((out[2].pos[1] + out[3].pos[1]) / 2.0, CURSOR_TOP_Y);
+        // One spacing behind the arriving plane (z = 0 at the default
+        // z_offset) — off the Lissajous plane entirely.
+        approx(out[0].pos[2], -0.12);
+
+        // A mid-spectrum centroid maps exactly like the grid axis.
+        f.centroid = 331.0;
+        out.clear();
+        append_centroid_cursor(&f, &s, &mut out);
+        let want = crate::grid::x_from_normalized(
+            crate::grid::normalized_positions(s.log_factor, 1024)[331],
+        );
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, want);
+
+        // Fractional (4-frame smoothed) centroids round to the nearest bin.
+        f.centroid = 331.49;
+        out.clear();
+        append_centroid_cursor(&f, &s, &mut out);
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, want);
+
+        // Runtime FFT size: the mapping follows the frame's bin count
+        // (here 512 bins = the 1024-point FFT rung).
+        f.centroid = 255.0;
+        f.bin_count = 512;
+        out.clear();
+        append_centroid_cursor(&f, &s, &mut out);
+        let want = crate::grid::x_from_normalized(
+            crate::grid::normalized_positions(s.log_factor, 512)[255],
+        );
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, want);
+
+        // Out-of-range centroids clamp into the axis instead of wild x.
+        f.centroid = 9_999.0;
+        out.clear();
+        append_centroid_cursor(&f, &s, &mut out);
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, 1.8);
+
+        // z_offset rides along, but never past the Lissajous plane (z = 0
+        // at any spacing/z_offset combination the keys can produce).
+        let mut fwd = ViewSettings::default();
+        fwd.move_z_offset(false); // +0.1 toward the camera
+        out.clear();
+        append_centroid_cursor(&f, &fwd, &mut out);
+        approx(out[0].pos[2], -0.12);
+        let mut back = ViewSettings::default();
+        back.move_z_offset(true); // −0.1
+        out.clear();
+        append_centroid_cursor(&f, &back, &mut out);
+        approx(out[0].pos[2], -0.22);
+
+        // No spectrum this frame (bin_count < 2) → no cursor at all.
+        let silent = Frame::default();
+        out.clear();
+        append_centroid_cursor(&silent, &s, &mut out);
+        assert!(out.is_empty());
+    }
+
+    /// RMS cursor: a horizontal line across the strip's x extent at the
+    /// waveform mapping of the averaged L/R RMS.
+    #[test]
+    fn rms_cursor_rides_the_waveform_mapping() {
+        let mut f = Frame { rms: [0.5, 0.25], ..Frame::default() }; // avg 0.375
+        let s = ViewSettings::default();
+        let mut out = Vec::new();
+        append_rms_cursor(&f, &s, &mut out);
+        assert_eq!(out.len(), 4);
+        // Spans the waveform strip's x extent, on the waveform's plane.
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, -WAVE_SPAN);
+        approx((out[2].pos[0] + out[3].pos[0]) / 2.0, WAVE_SPAN);
+        approx(out[0].pos[2], 0.0);
+        // y = WAVE_Y + wave_scale·2·avg(rms).
+        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, WAVE_Y + 2.0 * 0.375);
+        // Above the Lissajous region's top even at full-scale audio.
+        f.rms = [1.0, 1.0];
+        out.clear();
+        append_rms_cursor(&f, &s, &mut out);
+        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, WAVE_Y + 2.0);
+        // wave_scale flows through.
+        let mut s2 = ViewSettings::default();
+        s2.scale_waveform(true);
+        out.clear();
+        append_rms_cursor(&f, &s2, &mut out);
+        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, WAVE_Y + s2.wave_scale * 2.0);
+    }
+
+    /// Disabled (`4` off) → no cursor vertices at all.
+    #[test]
+    fn cursors_disabled_produce_no_vertices() {
+        let f = Frame { bin_count: 1024, centroid: 100.0, rms: [0.3, 0.2], ..Frame::default() };
+        let mut s = ViewSettings::default();
+        let mut out = Vec::new();
+        append_centroid_cursor(&f, &s, &mut out);
+        append_rms_cursor(&f, &s, &mut out);
+        assert_eq!(out.len(), 8, "two straight segments");
+        s.toggle_cursors();
+        assert!(!s.cursors_on);
+        out.clear();
+        append_centroid_cursor(&f, &s, &mut out);
+        append_rms_cursor(&f, &s, &mut out);
+        assert!(out.is_empty(), "disabled → no vertices");
+    }
+
     #[test]
     fn toggles_flip() {
         let mut s = ViewSettings::default();
@@ -759,6 +967,11 @@ mod tests {
         assert!(!s.waterfall_on);
         s.toggle_lissajous();
         assert!(!s.lissajous_on);
+        // `4`: feature cursors default on, flip off and back.
+        s.toggle_cursors();
+        assert!(!s.cursors_on);
+        s.toggle_cursors();
+        assert!(s.cursors_on);
         // `a`: content-adaptive gain — default off, toggles back.
         assert!(!s.auto_scale);
         s.toggle_auto_scale();

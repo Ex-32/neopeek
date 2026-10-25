@@ -50,18 +50,24 @@ pub fn history_row(head: usize, slice: usize, n: usize) -> usize {
 /// `bins` is the *current* FFT's bin count (runtime-adjustable); the
 /// axis spans exactly the valid bins whatever the size.
 pub fn normalized_positions(factor: f32, bins: usize) -> Vec<f32> {
+    (0..bins).map(|k| normalized_position_at(factor, bins, k)).collect()
+}
+
+/// Single-bin version of [`normalized_positions`] — the same formula, so
+/// a position computed here always agrees with the grid axis. Exists
+/// because the feature cursor recomputes one bin position per frame and
+/// must not allocate the whole axis vector on the hot path.
+///
+/// Requires `bins ≥ 2` (the `bins − 1` denominator); callers guard.
+pub fn normalized_position_at(factor: f32, bins: usize, k: usize) -> f32 {
     let f = factor.max(0.0);
     let denom = (1.0 + f).ln();
-    (0..bins)
-        .map(|k| {
-            let t = k as f32 / (bins - 1) as f32;
-            if denom <= f32::EPSILON {
-                t // f = 0 → exactly linear
-            } else {
-                (1.0 + f * t).ln() / denom
-            }
-        })
-        .collect()
+    let t = k as f32 / (bins - 1) as f32;
+    if denom <= f32::EPSILON {
+        t // f = 0 → exactly linear
+    } else {
+        (1.0 + f * t).ln() / denom
+    }
 }
 
 /// x position (−X_SPAN…X_SPAN) for normalized coordinate `n ∈ 0…1`.
@@ -175,6 +181,18 @@ mod tests {
         // Strictly increasing over bins.
         for w in p.windows(2) {
             assert!(w[1] > w[0]);
+        }
+    }
+
+    /// The single-bin helper agrees with the full axis for every factor —
+    /// the cursor's per-frame position must sit exactly on the grid axis.
+    #[test]
+    fn position_at_matches_axis() {
+        for factor in [0.0, 0.5, 1.5, 8.0] {
+            let axis = normalized_positions(factor, DEFAULT_BINS);
+            for k in [0, 1, DEFAULT_BINS / 2, DEFAULT_BINS - 1] {
+                approx(normalized_position_at(factor, DEFAULT_BINS, k), axis[k], 1e-6);
+            }
         }
     }
 

@@ -36,6 +36,11 @@ pub fn handle_key(settings: &mut ViewSettings, key: &str) -> KeyPress {
             settings.toggle_waterfall();
             (false, Some(format!("waterfall = {}", on_off(settings.waterfall_on))))
         }
+        // Feature cursors (sndpeek's feature overlay '4' parity)
+        "4" => {
+            settings.toggle_cursors();
+            (false, Some(format!("cursors = {}", on_off(settings.cursors_on))))
+        }
         // Magnitude / color modes
         "d" => {
             settings.toggle_db();
@@ -207,6 +212,7 @@ const KEYBINDS: &[(&str, &str)] = &[
     ("1", "waveform on/off"),
     ("2", "lissajous on/off"),
     ("3 w", "waterfall on/off"),
+    ("4", "feature cursors (centroid + RMS) on/off"),
     ("d", "dB/linear magnitude"),
     ("S", "surface on/off"),
     ("r", "rainbow on/off"),
@@ -264,6 +270,16 @@ mod tests {
         assert!(s.waterfall_on);
         handle_key(&mut s, "2");
         assert!(!s.lissajous_on);
+        // `4`: feature cursors — sndpeek's feature overlay toggle parity,
+        // reporting the dump's field name.
+        assert!(s.cursors_on);
+        let (quit, desc) = handle_key(&mut s, "4");
+        assert!(!quit);
+        assert_eq!(desc.as_deref(), Some("cursors = off"));
+        assert!(!s.cursors_on);
+        let (_, desc) = handle_key(&mut s, "4");
+        assert_eq!(desc.as_deref(), Some("cursors = on"));
+        assert!(s.cursors_on);
     }
 
     #[test]
