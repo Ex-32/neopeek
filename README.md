@@ -2,7 +2,7 @@
 
 **Disclaimer: this project was written by agents for fun and was only tested in a pipewire+vulkan+wayland environment—I have not read most of the code, so no guarantees about functionality or code quality**
 
-A modern, reimplementation of [sndpeek](https://github.com/guscreek/sndpeek) with support for modern linux audio stacks.
+A modern, reimplementation of [sndpeek](https://soundlab.cs.princeton.edu/software/sndpeek/) with support for modern linux audio stacks.
 
 ![screenshot placeholder — add a screenshot of the running waterfall](docs/screenshot.png)
 
