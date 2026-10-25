@@ -33,7 +33,7 @@ Mouse: left-drag orbit · shift-/middle-drag pan · wheel zoom.
 | key | action |
 |-----|--------|
 | `1` / `2` / `3` (or `w`) | waveform / Lissajous / waterfall toggle — the Lissajous figure is drawn **coplanar with the waveform** (same x-y plane, lower-right of the scene: right of center, below the wave strip) so it faces the default camera instead of standing edge-on |
-| `S` | filled-surface waterfall mode: theme `surface_ramp` colors — **unless rainbow (`r`) is also on**, in which case the same height heatmap colors the surface (no depth dimming); the arriving plane keeps the theme now/future blend either way |
+| `S` | filled-surface waterfall mode: theme `surface_ramp` colors — **unless rainbow (`r`) is also on**, in which case the same height heatmap colors the surface (no depth dimming); the arriving plane keeps the theme now/future blend either way. Non-rainbow depth dimming keeps a floor: even the oldest slice stays at ≥ 35 % of its ramp color so the surface never fades fully into the background (line mode keeps the original full fade) |
 | `d` | dB magnitude mode (theme `db_floor`/`db_ceil` window) |
 | `r` | rainbow = **height heatmap**: color follows the curve's magnitude at each point — cool violet/blue at the floor, cyan/green mid, yellow → red at the crest (same mapping in linear and dB display modes; no depth dimming while on) |
 | `a` | auto-scale waterfall gain — sizes the waterfall height to the audio content each frame (tallest recent content ≈ 8/10 of the view; fast attack, slow release ≈ 1.4 s; silence holds the last gain). Off → the fixed default height returns immediately. |
@@ -98,6 +98,11 @@ RON files (PLAN §6.1): background, waterfall colors (`past`/`future`/
 `now_line`, optional `rainbow`, dB window, optional `surface_ramp` stops),
 waveform/lissajous color+scale, meter gradient + peak hold, HUD text colors
 and font size. Example — see `crates/neopeek-theme/assets/themes/Ember.ron`.
+`surface_ramp` stops run dark (low magnitude) → bright (peak); themes
+without one fall back to a two-stop `past → future` gradient. The built-ins
+all ship high-contrast ramps (large luminance swing from the background up
+to a near-white tip) because the filled surface must stay legible without
+the rainbow heatmap.
 
 ```ron
 (

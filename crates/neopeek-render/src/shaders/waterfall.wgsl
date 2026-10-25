@@ -72,6 +72,18 @@ fn heat_hue(t: f32) -> f32 {
     return (1.0 - t) * 0.72;
 }
 
+// Surface-only dimming floor. The raw depth fade
+// `fval = (depth − slice + drift) / depth` bottoms out at ≈ 1/depth, which
+// for a FILLED surface multiplies whole slices into the background — the
+// structure vanishes. Thin depth-cued lines read fine with the full fade,
+// so the floor is applied only on the filled-surface path: fval is remapped
+// so the oldest slice still shows SURFACE_FLOOR of its ramp color and the
+// fade stays monotonic up to full brightness at the newest slices.
+const SURFACE_FLOOR: f32 = 0.35;
+fn surface_fade(fval: f32) -> f32 {
+    return mix(SURFACE_FLOOR, 1.0, clamp(fval, 0.0, 1.0));
+}
+
 @vertex
 fn vs_main(
     @location(0) x: f32,
@@ -97,13 +109,13 @@ fn vs_main(
     // REPLACED by the same per-vertex height heatmap the line mode uses
     // (the fragment stage refines it per-pixel) — a surface vertex whose
     // neighbor was the theme ramp keeps a height ≥ 0 handoff. Rainbow
-    // off: the theme ramp exactly as before, including depth-cue
-    // dimming (dimming stays a non-rainbow-only feature).
+    // off: the theme ramp with the floored depth dimming
+    // (`surface_fade`; the un-floored `fval` stays line-mode-only).
     if u.surface > 0.5 {
         let t = clamp(y_lin, 0.0, 1.0);
         var c = select(
             hue_rgb(heat_hue(t)),
-            textureLoad(ramp, vec2<u32>(u32(t * 255.0 + 0.5), 0u), 0).rgb * fval,
+            textureLoad(ramp, vec2<u32>(u32(t * 255.0 + 0.5), 0u), 0).rgb * surface_fade(fval),
             u.rainbow <= 0.5,
         );
         var heat_t = select(t, -1.0, u.rainbow <= 0.5);

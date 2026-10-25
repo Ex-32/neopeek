@@ -50,21 +50,85 @@ fn invalid_ron_rejected() {
 
 #[test]
 fn surface_ramp_optional_and_typed() {
-    let t = Theme::parse(EMBER_RON).unwrap();
-    assert!(t.waterfall.surface_ramp.is_empty());
-    // With a ramp.
-    let ron = EMBER_RON.replace(
-        "db_ceil: 0.0,",
-        concat!(
-            "db_ceil: 0.0,\n        surface_ramp: [",
-            "(pos: 0.0, color: \"#05070f\"),",
-            "(pos: 1.0, color: \"#ffe3a0\")",
-            "],"
-        ),
-    );
-    let t = Theme::parse(&ron).unwrap();
+    // A theme without `surface_ramp` parses (the field is optional; the
+    // renderer falls back to `past → future`). Built-ins all define one —
+    // see `builtin_surface_ramps_have_contrast`.
+    let minimal = Theme::parse(
+        r##"(name: "x", background: "#0b0b10", waterfall: (past: "#fff", future: "#fff", now_line: "#fff", db_floor: -80.0, db_ceil: 0.0), waveform: (color: "#fff", width: 1.0), lissajous: (color: "#fff", scale: 1.0), meters: (grad_low: "#fff", grad_high: "#fff", peak_hold_ms: 1), hud: (text: "#fff", dim: "#fff", font_size: 14.0, accent: "#fff"))"##,
+    )
+    .unwrap();
+    assert!(minimal.waterfall.surface_ramp.is_empty());
+    // With a ramp (inserted into the ramp-less minimal theme — Ember now
+    // defines its own).
+    let ron = r##"(name: "x", background: "#0b0b10", waterfall: (past: "#fff", future: "#fff", now_line: "#fff", db_floor: -80.0, db_ceil: 0.0, surface_ramp: [(pos: 0.0, color: "#05070f"), (pos: 1.0, color: "#ffe3a0")]), waveform: (color: "#fff", width: 1.0), lissajous: (color: "#fff", scale: 1.0), meters: (grad_low: "#fff", grad_high: "#fff", peak_hold_ms: 1), hud: (text: "#fff", dim: "#fff", font_size: 14.0, accent: "#fff"))"##;
+    let t = Theme::parse(ron).unwrap();
     assert_eq!(t.waterfall.surface_ramp.len(), 2);
     assert_eq!(t.waterfall.surface_ramp[0].pos, 0.0);
+}
+
+/// Rec.709 luminance of a resolved color (the stored values are the raw
+/// sRGB bytes scaled 1/255, so this is gamma-space luminance).
+fn lum(c: Color) -> f32 {
+    0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+}
+
+/// Contrast floor for built-in `surface_ramp`s (surface mode without
+/// rainbow): a filled surface must not melt into the background.
+/// Pinned: stop luminance range ≥ 0.5, and the interpolated ramp keeps
+/// only a short head within 0.05 luminance of the background — at most 8
+/// consecutive of 64 samples, ≤ 16 (25 %) in total.
+#[test]
+fn builtin_surface_ramps_have_contrast() {
+    use crate::{ramp_to_rgba8, BUILTIN_NAMES, RampStop};
+    const WIDTH: usize = 64;
+    const NEAR_BG: f32 = 0.05;
+    const MAX_RUN: usize = 8;
+    const MAX_TOTAL: usize = WIDTH / 4;
+
+    for name in BUILTIN_NAMES {
+        let t = builtin(name).expect("built-in must parse");
+        let stops: &[RampStop] = &t.waterfall.surface_ramp;
+        assert!(
+            !stops.is_empty(),
+            "{name}: built-ins must define an explicit surface_ramp \
+             (the past→future fallback has no contrast guarantee)"
+        );
+        let ls: Vec<f32> = stops.iter().map(|s| lum(s.color)).collect();
+        let range = ls.iter().cloned().fold(f32::NAN, f32::max)
+            - ls.iter().cloned().fold(f32::NAN, f32::min);
+        assert!(
+            range >= 0.5,
+            "{name}: surface ramp luminance range {range} < 0.5 ({ls:?})"
+        );
+
+        let bg = lum(t.background);
+        let ramp = ramp_to_rgba8(stops, WIDTH);
+        let mut run = 0;
+        let mut max_run = 0;
+        let mut total = 0;
+        for px in ramp.chunks_exact(4) {
+            let y = (px[0] as f32 / 255.0) * 0.2126
+                + (px[1] as f32 / 255.0) * 0.7152
+                + (px[2] as f32 / 255.0) * 0.0722;
+            if (y - bg).abs() < NEAR_BG {
+                run += 1;
+                total += 1;
+                max_run = max_run.max(run);
+            } else {
+                run = 0;
+            }
+        }
+        assert!(
+            max_run <= MAX_RUN,
+            "{name}: {max_run} consecutive ramp samples sit within {NEAR_BG} \
+             luminance of the background (limit {MAX_RUN})"
+        );
+        assert!(
+            total <= MAX_TOTAL,
+            "{name}: {total}/{WIDTH} ramp samples sit within {NEAR_BG} \
+             luminance of the background (limit {MAX_TOTAL})"
+        );
+    }
 }
 
 #[test]

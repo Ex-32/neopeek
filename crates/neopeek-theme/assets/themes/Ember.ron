@@ -11,6 +11,16 @@
         rainbow: false,
         db_floor: -80.0,
         db_ceil: 0.0, // the M4 shader formula maps |X| = 8 → full height
+        // Filled-surface gradient: near-black ember floor → deep red →
+        // accent → hot gold → bright ember-white tip (high luminance
+        // swing so structure reads against the background).
+        surface_ramp: [
+            (pos: 0.0, color: "#160603"),
+            (pos: 0.35, color: "#8c2a08"),
+            (pos: 0.65, color: "#e2542a"),
+            (pos: 0.85, color: "#ffb040"),
+            (pos: 1.0, color: "#ffe9b8"),
+        ],
     ),
     waveform: ( color: "#6666ff", width: 1.0 ),
     lissajous: ( color: "#ffff80", scale: 0.45 ),

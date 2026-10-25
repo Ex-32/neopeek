@@ -9,6 +9,15 @@
         rainbow: false,
         db_floor: -80.0,
         db_ceil: 0.0,
+        // Filled-surface gradient: deep ice-blue floor → azure → sky →
+        // cyan → ice-white tip.
+        surface_ramp: [
+            (pos: 0.0, color: "#0a1e3f"),
+            (pos: 0.35, color: "#1a56c8"),
+            (pos: 0.6, color: "#3fa0f0"),
+            (pos: 0.85, color: "#8adfff"),
+            (pos: 1.0, color: "#eafaff"),
+        ],
     ),
     waveform: ( color: "#4da6ff", width: 1.0 ),
     lissajous: ( color: "#8adfff", scale: 0.45 ),

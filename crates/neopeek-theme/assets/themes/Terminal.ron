@@ -9,6 +9,15 @@
         rainbow: false,
         db_floor: -80.0,
         db_ceil: 0.0,
+        // Filled-surface gradient: near-black phosphor floor → dark green
+        // → classic terminal green → white-green tip (the luminance
+        // swing, not hue, is the contrast in this monochrome family).
+        surface_ramp: [
+            (pos: 0.0, color: "#041608"),
+            (pos: 0.4, color: "#148f10"),
+            (pos: 0.7, color: "#39ff14"),
+            (pos: 1.0, color: "#d8ffcc"),
+        ],
     ),
     waveform: ( color: "#2aff6a", width: 1.0 ),
     lissajous: ( color: "#00ff9c", scale: 0.45 ),

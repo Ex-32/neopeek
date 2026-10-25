@@ -10,6 +10,15 @@
         rainbow: false,
         db_floor: -80.0,
         db_ceil: 0.0,
+        // Filled-surface gradient: deep violet floor → magenta → hot-pink
+        // accent → light pink → pink-white tip.
+        surface_ramp: [
+            (pos: 0.0, color: "#3a0645"),
+            (pos: 0.35, color: "#a80a68"),
+            (pos: 0.6, color: "#ff006e"),
+            (pos: 0.8, color: "#ff7ab8"),
+            (pos: 1.0, color: "#ffe9f4"),
+        ],
     ),
     waveform: ( color: "#00e5ff", width: 1.0 ),
     lissajous: ( color: "#fff01a", scale: 0.45 ),
