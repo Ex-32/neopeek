@@ -356,14 +356,14 @@ impl HudUI {
         }
         self.viewport.update(queue, Resolution { width, height });
 
-        // The perf column's real composition: adapter / fps / latency.
-        // The layout authority (`hud_text_anchors`) right-justifies
+        // The perf column's real composition: adapter, then fps · latency
+        // on one line. The layout authority (`hud_text_anchors`) right-justifies
         // `anchors[1].0` from the widest of these lines via
         // `perf_panel_x` (hud.rs), so long adapter names grow leftwards
         // instead of clipping off the right edge. `self.texts[1]` is the
         // composition the buffers already display, so this rides the same
         // 4 Hz gate — no per-frame recomposition, no allocation.
-        let mut perf_lines = ["", "", ""];
+        let mut perf_lines = ["", ""];
         for (slot, line) in perf_lines.iter_mut().zip(self.texts[1].lines()) {
             *slot = line;
         }
@@ -480,11 +480,12 @@ fn panel_texts(hud: &HudData) -> [String; 5] {
 }
 
 fn perf_text(hud: &HudData) -> String {
-    // Top-down order: rendering backend/GPU name, fps, frame latency.
-    // The column is right-justified in `prepare` (`hud.rs::
-    // perf_panel_x`) so an adapter name like "NVIDIA GeForce RTX 3080"
-    // grows leftwards instead of clipping off the right edge.
-    format!("{}\n{:.0} fps\n{:.1} ms", hud.adapter, hud.fps, hud.frame_ms)
+    // Top-down order: rendering backend/GPU name, then fps and frame
+    // latency joined on one line. The column is right-justified in
+    // `prepare` (`hud.rs::perf_panel_x`) so an adapter name like
+    // "NVIDIA GeForce RTX 3080" grows leftwards instead of clipping
+    // off the right edge.
+    format!("{}\n{:.0} fps · {:.1} ms", hud.adapter, hud.fps, hud.frame_ms)
 }
 
 /// The TextArea for the keybind-hints panel, or `None` when hints are
@@ -711,13 +712,14 @@ mod tests {
         assert!(device_text(&hud).contains("FFT 8192 (window 1024"), "{}", device_text(&hud));
     }
 
-    // Perf panel order: backend/GPU name first, fps second, frame
-    // latency third (top-down top-right column); the right-justify
-    // math is tested in hud.rs (`perf_panel_right_justifies_…`).
+    // Perf panel order: backend/GPU name first, then fps and frame
+    // latency joined on one line with · (top-down top-right column);
+    // the right-justify math is tested in hud.rs
+    // (`perf_panel_right_justifies_…`).
     #[test]
     fn perf_text_orders_adapter_fps_latency() {
         let s = perf_text(&fixture_hud());
-        assert_eq!(s.lines().collect::<Vec<_>>(), vec!["Vulkan", "60 fps", "16.6 ms"]);
+        assert_eq!(s.lines().collect::<Vec<_>>(), vec!["Vulkan", "60 fps · 16.6 ms"]);
     }
 
     /// Right-justify rides the 4 Hz gate: the cached composition `prepare`
@@ -727,7 +729,7 @@ mod tests {
     #[test]
     fn perf_panel_x_uses_cached_composition_lines() {
         let texts = panel_texts(&fixture_hud());
-        let mut lines = ["", "", ""];
+        let mut lines = ["", ""];
         for (slot, line) in lines.iter_mut().zip(texts[1].lines()) {
             *slot = line;
         }
@@ -736,10 +738,11 @@ mod tests {
         // The value `prepare` puts in the perf `TextArea.left`.
         let anchor = crate::hud::hud_text_anchors(w, 720, scale, font_px, 1, lines)[1].0;
         assert!((anchor - x).abs() < 1e-3, "anchor {anchor} != perf_panel_x {x}");
-        // Right edge flush within a fixed 6-char fps line's width of the
-        // margin (the fps line is the widest in the fixture composition).
+        // Right edge flush within a fixed 16-char fps·latency line's width
+        // of the margin (the merged line is the widest in the fixture
+        // composition, "Vulkan" being only 6 chars).
         let right = anchor
-            + 6.0 * crate::hud::MONO_ADVANCE_EM * font_px * scale;
+            + 16.0 * crate::hud::MONO_ADVANCE_EM * font_px * scale;
         assert!(right <= w as f32 && anchor >= 10.0, "anchor {anchor}, right {right}");
     }
 }

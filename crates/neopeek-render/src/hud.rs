@@ -199,7 +199,7 @@ pub fn hint_lines_for(show_hints: bool) -> usize {
 /// `chars · [`MONO_ADVANCE_EM`] · font_px · scale`; the longest line
 /// decides. Clamped at the left margin so degenerate narrow windows
 /// cannot push the panel off-surface.
-pub fn perf_panel_x(width: u32, scale: f32, font_px: f32, lines: [&str; 3]) -> f32 {
+pub fn perf_panel_x(width: u32, scale: f32, font_px: f32, lines: [&str; 2]) -> f32 {
     let max_chars = lines
         .iter()
         .map(|l| l.chars().count())
@@ -219,8 +219,8 @@ pub fn perf_panel_x(width: u32, scale: f32, font_px: f32, lines: [&str; 3]) -> f
 /// its anchors directly and must not re-derive a panel's position. In
 /// particular, the perf column's x is right-justified here from its real
 /// composition via [`perf_panel_x`] (the widest of `perf_lines` decides),
-/// not from a fixed-width offset; `perf_lines` are exactly the three
-/// lines the perf buffer displays (adapter / fps / latency).
+/// not from a fixed-width offset; `perf_lines` are exactly the two
+/// lines the perf buffer displays (adapter / fps · latency).
 ///
 /// All offsets are logical pixels and are multiplied by `scale` here;
 /// the surface `width`/`height` are already physical, so they combine
@@ -241,7 +241,7 @@ pub fn hud_text_anchors(
     scale: f32,
     font_px: f32,
     hint_lines: usize,
-    perf_lines: [&str; 3],
+    perf_lines: [&str; 2],
 ) -> [(f32, f32); 5] {
     let (w, h) = (width as f32, height as f32);
     // Line height matches the buffers' `Metrics` (hud_render).
@@ -402,10 +402,10 @@ mod tests {
     /// Default HUD font (Ember metrics; hud_render starts at this too).
     const FONT_PX: f32 = 14.0;
 
-    /// The perf column's three real lines (adapter / fps / latency);
+    /// The perf column's two real lines (adapter / fps · latency);
     /// mirrors what `perf_text` emits in hud_render.
-    const PERF_SAMPLE_LINES: [&str; 3] =
-        ["NVIDIA GeForce RTX 3080", "60 fps", "16.7 ms"];
+    const PERF_SAMPLE_LINES: [&str; 2] =
+        ["NVIDIA GeForce RTX 3080", "60 fps · 16.7 ms"];
 
     /// Regression for "HUD text vanishes after moving to another
     /// monitor": every panel anchor stays on the surface for a spread of
@@ -593,7 +593,7 @@ mod tests {
         for &(w, h) in &[(640u32, 480u32), (800, 600), (1280, 720), (1920, 1080)] {
             for scale in [0.75f32, 1.0, 1.25, 1.5, 2.0] {
                 for adapter in adapters {
-                    let lines = [adapter, "60 fps", "16.7 ms"];
+                    let lines = [adapter, "60 fps · 16.7 ms"];
                     let want = perf_panel_x(w, scale, FONT_PX, lines);
                     for hint_lines in [0usize, 1, 3] {
                         let a = hud_text_anchors(w, h, scale, FONT_PX, hint_lines, lines);
@@ -611,10 +611,10 @@ mod tests {
     /// margin instead of underflowing.
     #[test]
     fn perf_panel_clamps_for_tiny_windows() {
-        let lines = ["NVIDIA GeForce RTX 3080", "60 fps", "16.7 ms"];
+        let lines = ["NVIDIA GeForce RTX 3080", "60 fps · 16.7 ms"];
         assert_eq!(perf_panel_x(200, 2.0, FONT_PX, lines), HUD_MARGIN * 2.0);
         // Wide window: plain, unclamped math.
-        assert_eq!(perf_panel_x(800, 1.0, FONT_PX, ["a", "b", "c"]), 800.0 - HUD_MARGIN - 1.0 * MONO_ADVANCE_EM * FONT_PX);
+        assert_eq!(perf_panel_x(800, 1.0, FONT_PX, ["a", "b"]), 800.0 - HUD_MARGIN - 1.0 * MONO_ADVANCE_EM * FONT_PX);
     }
 
     #[test]
