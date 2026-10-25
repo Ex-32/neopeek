@@ -32,7 +32,7 @@ Mouse: left-drag orbit · shift-/middle-drag pan · wheel zoom.
 
 | key | action |
 |-----|--------|
-| `1` / `2` / `3` (or `w`) | waveform / Lissajous / waterfall toggle |
+| `1` / `2` / `3` (or `w`) | waveform / Lissajous / waterfall toggle — the Lissajous figure is drawn **coplanar with the waveform** (same x-y plane, lower-right of the scene: right of center, below the wave strip) so it faces the default camera instead of standing edge-on |
 | `S` | filled-surface waterfall mode: theme `surface_ramp` colors — **unless rainbow (`r`) is also on**, in which case the same height heatmap colors the surface (no depth dimming); the arriving plane keeps the theme now/future blend either way |
 | `d` | dB magnitude mode (theme `db_floor`/`db_ceil` window) |
 | `r` | rainbow = **height heatmap**: color follows the curve's magnitude at each point — cool violet/blue at the floor, cyan/green mid, yellow → red at the crest (same mapping in linear and dB display modes; no depth dimming while on) |

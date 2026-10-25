@@ -23,7 +23,25 @@ pub const WAVE_Y: f32 = 0.7;
 /// `-`/`=` still zoom *relative* to this default.
 pub const DEFAULT_WATERFALL_GAIN: f32 = 0.35;
 pub const WAVE_SPAN: f32 = 1.8; // x ∈ −1.8…1.8
-pub const LISS_X: f32 = 1.2;
+/// Lissajous placement (coplanar with the waveform, `z = 0`): right of
+/// the scene center, below the waveform strip's silent line
+/// (`WAVE_Y = 0.7`). At full amplitude the figure is a ±0.45 square
+/// around the center (x ≈ 0.25…1.15, y ≈ −0.23…0.68) — unlike the old
+/// `x = 1.2` edge-on plane it faces the default camera, it clears the
+/// waveform strip for every input, and at LOS/typical amplitudes (the
+/// figure points at the square center) it clears the waterfall's silent
+/// floor line (y = 0) too; only near-full-scale stereo corners graze
+/// the floor.
+///
+/// Why not farther right: on the waveform's plane (z = 0) the default
+/// vantage's frustum is the near edge — visible y spans ≈ −0.24…1.81
+/// and the x reach tightens with height; "below the wave strip and
+/// fully on-screen at 800×600" pins the center window to
+/// y ≈ 0.21…0.24, x ≤ ≈0.75. (The waveform's own ±1.8 ends already
+/// project past the 4:3 frustum.) Pinned by tests through the real
+/// camera projection — both 4:3 and 16:9, full amplitude.
+pub const LISS_CENTER_X: f32 = 0.7;
+pub const LISS_CENTER_Y: f32 = 0.225;
 pub const LISS_SCALE: f32 = 0.45;
 /// Pseudo-Lissajous delay (mono source): half the window.
 pub const LISS_DELAY: usize = WINDOW_FRAMES / 2;
@@ -307,14 +325,18 @@ pub fn append_waveform(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVertex
     }
 }
 
-/// Append the Lissajous strip on the plane `x = 1.2`:
-/// - true stereo: figure-X = L, figure-Y = R (figure-Y maps to world y,
-///   figure-X maps to world z, toward the camera for positive L);
+/// Append the Lissajous figure coplanar with the waveform — the same
+/// x-y plane (`z = 0`; the figure faces the default camera, previously it
+/// stood on the edge-on plane `x = 1.2` and read as flat):
+/// - figure-X world x = [`LISS_CENTER_X`] + `liss_scale · L`,
+/// - figure-Y world y = [`LISS_CENTER_Y`] + `liss_scale · R`,
+/// - true stereo: figure-X = L, figure-Y = R;
 /// - mono-ish source (`Frame::mono_like`): pseudo-Lissajous, mono vs its
 ///   `liss_delay`-sample delayed copy (`y` cycles the delay; `Y` is the
 ///   snap-side camera view, not this).
 ///
-/// Closed figure → wrapped tangents; expanded by `strip_width`.
+/// Closed figure → wrapped tangents; expanded by `strip_width` (the
+/// normal now lies in the x-y plane, so the strip stays in-plane).
 pub fn append_lissajous(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVertex>) {
     let hw = s.strip_width * 0.5;
     let point = |i: usize| {
@@ -326,17 +348,20 @@ pub fn append_lissajous(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVerte
         } else {
             (frame.left[i], frame.right[i])
         };
-        (s.liss_scale * u, s.liss_scale * v) // (z, y) in-world
+        (
+            LISS_CENTER_X + s.liss_scale * u, // figure-X → world x
+            LISS_CENTER_Y + s.liss_scale * v, // figure-Y → world y
+        )
     };
     for i in 0..WINDOW_FRAMES {
-        let (zu, yv) = point(i);
-        let (zp, yp) = point((i + WINDOW_FRAMES - 1) % WINDOW_FRAMES);
-        let (zn, yn) = point((i + 1) % WINDOW_FRAMES);
-        let (tz, ty) = (zn - zp, yn - yp);
-        let len = (tz * tz + ty * ty).sqrt().max(1e-9);
-        let (nz, ny) = (-ty / len, tz / len);
-        out.push(LineVertex { pos: [LISS_X, yv + ny * hw, zu + nz * hw] });
-        out.push(LineVertex { pos: [LISS_X, yv - ny * hw, zu - nz * hw] });
+        let (xu, yv) = point(i);
+        let (xp, yp) = point((i + WINDOW_FRAMES - 1) % WINDOW_FRAMES);
+        let (xn, yn) = point((i + 1) % WINDOW_FRAMES);
+        let (tx, ty) = (xn - xp, yn - yp);
+        let len = (tx * tx + ty * ty).sqrt().max(1e-9);
+        let (nx, ny) = (-ty / len, tx / len);
+        out.push(LineVertex { pos: [xu + nx * hw, yv + ny * hw, 0.0] });
+        out.push(LineVertex { pos: [xu - nx * hw, yv - ny * hw, 0.0] });
     }
 }
 
@@ -575,27 +600,89 @@ mod tests {
         let mut out = Vec::new();
         append_lissajous(&f, &s, &mut out);
         assert_eq!(out.len(), 2 * WINDOW_FRAMES);
-        // Quad pair is centered on the figure point: (y,z) mean.
-        approx(out[0].pos[0], LISS_X); // plane constant
-        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, LISS_SCALE * f.right[0]); // figure-Y = R
-        approx((out[0].pos[2] + out[1].pos[2]) / 2.0, LISS_SCALE * f.left[0]); // figure-X = L
+        // Quad pair is centered on the figure point: (x,y) mean.
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, LISS_CENTER_X + LISS_SCALE * f.left[0]); // figure-X = L → world x
+        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, LISS_CENTER_Y + LISS_SCALE * f.right[0]); // figure-Y = R → world y
         // pseudo: mono vs delayed copy (same y for all slices in delta 0)
         f.mono_like = true;
         out.clear();
         append_lissajous(&f, &s, &mut out);
         // pseudo: figure-Y = mono[(i+delay)], figure-X = mono[i]
-        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, LISS_SCALE * f.mono[LISS_DELAY]);
-        approx((out[0].pos[2] + out[1].pos[2]) / 2.0, LISS_SCALE * f.mono[0]);
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, LISS_CENTER_X + LISS_SCALE * f.mono[0]);
+        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, LISS_CENTER_Y + LISS_SCALE * f.mono[LISS_DELAY]);
         // A different delay flows through (`y` cycle state).
         let mut s2 = ViewSettings::default();
         s2.cycle_liss_delay(); // delay = 256
         out.clear();
         append_lissajous(&f, &s2, &mut out);
-        approx((out[0].pos[2] + out[1].pos[2]) / 2.0, LISS_SCALE * f.mono[0]);
+        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, LISS_CENTER_X + LISS_SCALE * f.mono[0]);
         approx(
             (out[0].pos[1] + out[1].pos[1]) / 2.0,
-            LISS_SCALE * f.mono[256],
+            LISS_CENTER_Y + LISS_SCALE * f.mono[256],
         );
+    }
+
+    /// The figure is coplanar with the waveform: every vertex sits at
+    /// z = 0 and inside the reserved region (center ± scale, plus the
+    /// half strip width), face-on to the default camera.
+    #[test]
+    fn lissajous_is_coplanar_and_inside_reserved_region() {
+        // Full-amplitude figure: all four corners reachable.
+        let mut f = Frame { mono_like: false, ..Frame::default() };
+        for (i, &(l, r)) in [(1.0f32, 1.0), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)]
+            .iter()
+            .enumerate()
+        {
+            f.left[i] = l;
+            f.right[i] = r;
+        }
+        let s = ViewSettings::default();
+        let mut out = Vec::new();
+        append_lissajous(&f, &s, &mut out);
+        // z ≡ 0 exactly ('coplanar with the audio wave').
+        for v in &out {
+            approx(v.pos[2], 0.0);
+        }
+        // Bounded by the reserved square: center ± (scale + half width).
+        let reach = LISS_SCALE + s.strip_width * 0.5 + 1e-4;
+        let (xmin, xmax) = (LISS_CENTER_X - reach, LISS_CENTER_X + reach);
+        let (ymin, ymax) = (LISS_CENTER_Y - reach, LISS_CENTER_Y + reach);
+        for v in &out {
+            assert!(v.pos[0] >= xmin && v.pos[0] <= xmax, "x {} out of {:?}", v.pos[0], v.pos);
+            assert!(v.pos[1] >= ymin && v.pos[1] <= ymax, "y {} out of {:?}", v.pos[1], v.pos);
+        }
+        // Clear of the waveform strip: the whole region sits below the
+        // strip's silent centerline by more than the strip can reach.
+        assert!(
+            ymax < WAVE_Y - s.strip_width,
+            "liss region top {} must stay under the waveform strip at y = {WAVE_Y}",
+            ymax
+        );
+        // …and the quad expansion stays in-plane perpendicular: each pair
+        // is strip_width apart, both points at z = 0. (Fully flat figure
+        // points — zero neighbor change, the pre-existing 1e-9 fallback —
+        // degenerate to a single point; the corner indices below have
+        // real tangents, so the width contract is checked there.)
+        for pair in out.chunks(2).take(4) {
+            let d = (pair[0].pos[0] - pair[1].pos[0],
+                     pair[0].pos[1] - pair[1].pos[1]);
+            approx((d.0 * d.0 + d.1 * d.1).sqrt(), s.strip_width);
+        }
+        assert_eq!(out[0].pos[2], 0.0);
+
+        // Every figure point must project on-screen: the placement was
+        // chosen so the FULL-amplitude figure fits the default 800×600
+        // (4:3) vantage and wide windows alike — pinned at both, plus
+        // at 640×480 (a narrower 4:3).
+        for size in [(800u32, 600u32), (1920, 1080), (640, 480)] {
+            let cam = Camera::default_vantage(size.0, size.1);
+            let vp = cam.view_proj();
+            for v in &out {
+                let ndc = crate::camera::project(vp, v.pos);
+                assert!(ndc[0].abs() < 1.0 && ndc[1].abs() < 1.0 && ndc[2] < 1.0,
+                    "{}×{} clips vertex {:?}", size.0, size.1, v.pos);
+            }
+        }
     }
 
     #[test]
