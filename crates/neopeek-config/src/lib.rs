@@ -88,7 +88,7 @@ pub struct Cli {
     #[arg(long, value_name = "SIZE", value_parser = parse_fft_size, help = "FFT size (512-8192, default 2048)")]
     pub fft: Option<usize>,
 
-    /// Theme: built-in name (`Ember`/`Ice`/`Terminal`/`Cyber`) or path to a
+    /// Theme: built-in name (`Ember`/`Ice`/`Terminal`/`Cyber`/`TTY`) or path to a
     /// `.ron` theme file (PLAN.md §6.2). Missing/malformed → Ember.
     #[arg(long, value_name = "NAME|FILE", help = "theme name or .ron path")]
     pub theme: Option<String>,

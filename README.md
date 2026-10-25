@@ -52,7 +52,7 @@ Mouse: left-drag orbit · shift-/middle-drag pan · wheel zoom.
 | `m` | mute — also stops frame ingestion (listener-only build) |
 | `h` | keybind-hint line toggle |
 | `H` | whole HUD toggle |
-| `T` | cycle themes (Ember → Ice → Terminal → loaded custom) |
+| `T` | cycle themes (Ember → Ice → Terminal → Cyber → TTY → loaded custom) |
 | `F` | camera reset/fit |
 | `X` / `Y` / `Z` | snap views: top / side / front |
 | `p` | print all live settings to the console (sndpeek parity) |
@@ -116,7 +116,8 @@ Colors are `#rgb`, `#rrggbb` or `#rrggbbaa`.
 
 Built-ins: **Ember** (default — hand-tuned for contrast), **Ice** (blue/cyan),
 **Terminal** (high-contrast phosphor-CRT hacker green), **Cyber** (bright-pink
-waterfall, electric-yellow Lissajous).
+waterfall, electric-yellow Lissajous), **TTY** (pure-black background, classic
+VGA 16-color console palette).
 
 `--theme <name|path>`: an existing `.ron` path loads that file; otherwise
 `$XDG_CONFIG_HOME/neopeek/themes/<name>.ron` is tried; otherwise a built-in

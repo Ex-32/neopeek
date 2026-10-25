@@ -1,0 +1,28 @@
+// TTY: pure-black background, colors drawn from the classic Linux console
+// VGA 16-color palette (#000000 as black, dark/bright RGB+CYM, greys). The
+// waterfall heritage is sndpeek's greenish "past" (bright green), the "now"
+// edge flashes bright yellow, and the filled-surface mode fades through the
+// hot end of the VGA ramp: black → dark red → bright red → yellow → white.
+(
+    name: "TTY",
+    background: "#000000",
+    waterfall: (
+        past: "#55FF55",      // VGA bright green
+        future: "#FF5555",    // VGA bright red (filled mode)
+        now_line: "#FFFF55",  // VGA bright yellow "now" edge
+        rainbow: false,
+        db_floor: -80.0,
+        db_ceil: 0.0,
+        surface_ramp: [
+            (pos: 0.0,   color: "#000000"),
+            (pos: 0.25,  color: "#AA0000"),
+            (pos: 0.5,   color: "#FF5555"),
+            (pos: 0.75,  color: "#FFFF55"),
+            (pos: 1.0,   color: "#FFFFFF"),
+        ],
+    ),
+    waveform: ( color: "#55FFFF", width: 1.0 ),       // VGA bright cyan
+    lissajous: ( color: "#FF55FF", scale: 0.45 ),     // VGA bright magenta
+    meters: ( grad_low: "#00AA00", grad_high: "#FF5555", peak_hold_ms: 800 ),
+    hud: ( text: "#FFFFFF", dim: "#AAAAAA", font_size: 14.0, accent: "#55FFFF" ),
+)

@@ -224,8 +224,9 @@ pub const EMBER_RON: &str = include_str!("../assets/themes/Ember.ron");
 pub const ICE_RON: &str = include_str!("../assets/themes/Ice.ron");
 pub const TERMINAL_RON: &str = include_str!("../assets/themes/Terminal.ron");
 pub const CYBER_RON: &str = include_str!("../assets/themes/Cyber.ron");
+pub const TTY_RON: &str = include_str!("../assets/themes/TTY.ron");
 
-pub const BUILTIN_NAMES: [&str; 4] = ["Ember", "Ice", "Terminal", "Cyber"];
+pub const BUILTIN_NAMES: [&str; 5] = ["Ember", "Ice", "Terminal", "Cyber", "TTY"];
 
 /// Embedded RON for a built-in, case-insensitive.
 pub fn builtin_ron(name: &str) -> Option<&'static str> {
@@ -234,6 +235,7 @@ pub fn builtin_ron(name: &str) -> Option<&'static str> {
         "ice" => Some(ICE_RON),
         "terminal" => Some(TERMINAL_RON),
         "cyber" => Some(CYBER_RON),
+        "tty" => Some(TTY_RON),
         _ => None,
     }
 }

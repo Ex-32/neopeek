@@ -68,6 +68,35 @@ fn surface_ramp_optional_and_typed() {
 }
 
 #[test]
+fn tty_defaults_pin_vga_palette_and_heat_ramp() {
+    let t = Theme::parse(TTY_RON).unwrap();
+    assert_eq!(t.name, "TTY");
+    // Pure-black background.
+    assert!(hex_close(t.background, [0.0, 0.0, 0.0, 1.0]));
+    // Waterfall heritage: past bright green, now bright yellow, future
+    // bright red (VGA colors).
+    assert!(hex_close(t.waterfall.past, [0x55 as f32 / 255.0, 1.0, 0x55 as f32 / 255.0, 1.0]), "past");
+    assert!(hex_close(t.waterfall.now_line, [1.0, 1.0, 0x55 as f32 / 255.0, 1.0]), "now_line");
+    assert!(hex_close(t.waterfall.future, [1.0, 0x55 as f32 / 255.0, 0x55 as f32 / 255.0, 1.0]), "future");
+    assert_eq!(t.waterfall.db_floor, -80.0);
+    assert_eq!(t.waterfall.db_ceil, 0.0);
+    // HUD: white text, grey dim, cyan accent.
+    assert!(hex_close(t.hud.text, [1.0, 1.0, 1.0, 1.0]), "text");
+    assert!(hex_close(t.hud.dim, [0xAA as f32 / 255.0, 0xAA as f32 / 255.0, 0xAA as f32 / 255.0, 1.0]), "dim");
+    assert!(hex_close(t.hud.accent, [0x55 as f32 / 255.0, 1.0, 1.0, 1.0]), "accent");
+    assert_eq!(t.hud.font_size, 14.0);
+    // Filled-surface heat ramp built from the TTY palette, ends black→white.
+    let ramp = &t.waterfall.surface_ramp;
+    assert_eq!(ramp.len(), 5);
+    assert!(hex_close(ramp[0].color, [0.0, 0.0, 0.0, 1.0]), "ramp black start");
+    assert!(hex_close(ramp[4].color, [1.0, 1.0, 1.0, 1.0]), "ramp white end");
+    assert!(hex_close(ramp[1].color, [0xAA as f32 / 255.0, 0.0, 0.0, 1.0]), "ramp dark red");
+    // Bright-red and yellow stops land mid-ramp.
+    assert!(hex_close(ramp[2].color, [1.0, 0x55 as f32 / 255.0, 0x55 as f32 / 255.0, 1.0]), "ramp bright red");
+    assert!(hex_close(ramp[3].color, [1.0, 1.0, 0x55 as f32 / 255.0, 1.0]), "ramp yellow");
+}
+
+#[test]
 fn ember_defaults_hand_tuned_regression_pin() {
     let t = Theme::parse(EMBER_RON).unwrap();
     assert_eq!(t.name, "Ember");
