@@ -15,7 +15,7 @@ modern Linux audio backends.
 > assets** — we match *behavior and discrete parameters* (facts, not copyrightable
 > expression) and implement everything fresh in Rust with independent crates
 > (`rustfft` for DSP, no ported Marsyas/CARL/RtAudio code). neopeek is independently
-> licensed (open question §9, default MIT/Apache-2.0 dual).
+> licensed GPL-3.0-only (§9, user choice, 2026-10-25).
 
 ---
 
@@ -564,8 +564,11 @@ playback (`--nodisplay`-style headless feature dump parity), camera inertia, MSA
 ### Open questions for the user (defaults chosen; change anytime)
 
 1. **License**: sndpeek confirmed GPL v2+; since neopeek is fully clean-room
-   (rustfft, no ported code), we recommend **MIT OR Apache-2.0** dual. GPL-3.0 is
-   the alternative if you want the copyleft stance.
+   (rustfft, no ported code), the recommended dual was **MIT OR Apache-2.0**.
+   **RESOLVED (2026-10-25): user chose GPL-3.0-only** for the copyleft stance.
+   Clean-room status stays as documented (no code carried over from sndpeek).
+   Workspace deps (rustfft, wgpu, winit, cpal, etc.) are MIT/Apache/BSD — all
+   GPL-3-compatible for redistribution under GPL-3.0-only.
 2. **Duplex playback**: sndpeek played captured audio back (hence its mute key).
    neopeek defaults to **no playback** (listener-only). Confirm?
 3. **Log-factor default 1.5** (mildly log) vs sndpeek's faithful 1.0 — confirm 1.5?

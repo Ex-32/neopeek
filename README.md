@@ -7,8 +7,7 @@ waveform, Lissajous figure, metering and diagnostics, rendered with wgpu
 
 > sndpeek is GPL; neopeek is a **clean-room** project: behavior-matched from
 > recorded constants and observation (see `docs/research-sndpeek.md`), no
-> code ported. Licensed MIT OR Apache-2.0 (see `LICENSE-MIT` /
-> `LICENSE-APACHE`).
+> code ported. Licensed GPL-3.0-only (see `LICENSE`).
 
 ![screenshot placeholder — add a screenshot of the running waterfall](docs/screenshot.png)
 
@@ -178,7 +177,7 @@ strings — negligible, and it keeps borrows disjoint).
 
 ## License
 
-MIT OR Apache-2.0. The bundled JetBrains Mono font
+GPL-3.0-only. The bundled JetBrains Mono font
 (`crates/neopeek-render/assets/fonts/`) is under the SIL Open Font License
 1.1 (`JetBrainsMono-OFL.txt` alongside it). All sndpeek knowledge here is
 clean-room observed behavior, not ported code.

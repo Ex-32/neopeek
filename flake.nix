@@ -33,7 +33,7 @@
 
           meta = with pkgs.lib; {
             description = "Modern sndpeek-style audio visualizer (3D waterfall, telemetry HUD)";
-            license = with licenses; [ mit asl20 ];
+            license = with licenses; [ gpl3Only ];
             platforms = platforms.linux;
             mainProgram = "neopeek";
           };
