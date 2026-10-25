@@ -74,20 +74,6 @@ The HUD: left = L/R RMS meters with 800 ms peak-hold ticks + feature panel
 GPU adapter; bottom = device, backend, rate, FFT/window/hop, history depth,
 keybind hints; center = frozen/muted overlays.
 
-## Idle pause
-
-When nothing has been audible for a while, neopeek stops redrawing (no more
-60 fps of "a whole bunch of nothing" — trims GPU/compositor load on top of
-CPU): `--idle-pause <SECONDS>`, default 5, `0` = keep rendering
-unconditionally. Audio counts as idle when the drained FFT slices are
-**digital silence** — max raw bin magnitude exactly 0.0 — so a sink monitor
-that continuously delivers all-zero chunks idles too, while real sound (or
-any short gap under the threshold) keeps rendering. While paused the loop
-wakes once per second to watch for resumption; new audio or any input (key,
-mouse, resize, theme) resumes rendering within ≤ 1 s + one display frame.
-Frozen (`f`), muted (`m`) and `--autospin` never idle — the display keeps
-rendering in those states; only genuine audio idleness pauses.
-
 ## Themes
 
 RON files: background, waterfall colors (`past`/`future`/
