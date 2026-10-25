@@ -22,6 +22,10 @@
     ),
     waveform: ( color: "#00e5ff", width: 1.0 ),
     lissajous: ( color: "#fff01a", scale: 0.45 ),
+    // Feature cursors (4): the electric yellow — the theme's spare color
+    // family (Cyber has the least room left, so the cursor reuses the
+    // Lissajous yellow rather than introducing a new hue).
+    cursor: "#fff01a",
     meters: ( grad_low: "#00e5ff", grad_high: "#ff2400", peak_hold_ms: 800 ),
     hud: ( text: "#f2e9ff", dim: "#7a6f8f", font_size: 14.0, accent: "#ff006e" ),
 )

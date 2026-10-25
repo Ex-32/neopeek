@@ -101,6 +101,13 @@ pub struct Theme {
     pub lissajous: LissajousTheme,
     pub meters: MetersTheme,
     pub hud: HudTheme,
+    /// Feature-cursor overlay color (`4` toggle: the vertical
+    /// spectral-centroid line on the waterfall and the horizontal RMS
+    /// level line on the waveform strip — sndpeek's red feature overlay).
+    /// Optional so custom user themes keep parsing without it; missing
+    /// fields fall back to [`Theme::DEFAULT_CURSOR_COLOR`].
+    #[serde(default, deserialize_with = "de_hex_opt")]
+    pub cursor: Option<Color>,
 }
 
 /// `#rgb` / `#rrggbb` / `#rrggbbaa` → `[f32; 4]`; missing alpha = opaque.
@@ -145,11 +152,37 @@ where
     parse_hex(s).ok_or_else(|| serde::de::Error::custom(format!("bad hex color {s:?}")))
 }
 
+/// Optional hex color field: absent (`serde(default)`) → `None`; present
+/// → parsed like [`de_hex`]. The value deserializes as a plain string
+/// (RON's `deserialize_option` only accepts literal `Some(...)`/`None`
+/// wrappers), so users omit the field to get the fallback — writing
+/// `cursor: None` is a parse error, like any other malformed color.
+fn de_hex_opt<'de, D>(d: D) -> Result<Option<Color>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(d)?;
+    parse_hex(&s)
+        .map(Some)
+        .ok_or_else(|| serde::de::Error::custom(format!("bad hex color {s:?}")))
+}
+
 impl Theme {
+    /// Fallback feature-cursor overlay color when a theme defines no
+    /// `cursor` field: sndpeek drew its feature overlay (the centroid
+    /// cursor + RMS bar) in red — `#ff3333` keeps that identity.
+    pub const DEFAULT_CURSOR_COLOR: Color = [1.0, 0.2, 0.2, 1.0];
+
     /// Parses embedded-RON / file content; the single parse path used by
     /// everything (built-ins included, PLAN.md §6.2).
     pub fn parse(ron: &str) -> Result<Self, String> {
         ron::from_str(ron).map_err(|err| format!("theme parse: {err}"))
+    }
+
+    /// The feature-cursor overlay color, with the optional-field fallback
+    /// ([`Self::DEFAULT_CURSOR_COLOR`]) for themes that omit `cursor`.
+    pub fn cursor_color(&self) -> Color {
+        self.cursor.unwrap_or(Self::DEFAULT_CURSOR_COLOR)
     }
 
     /// RGB (opaque) view of a color, for shader uniforms.

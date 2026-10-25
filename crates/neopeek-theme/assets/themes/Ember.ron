@@ -24,6 +24,10 @@
     ),
     waveform: ( color: "#6666ff", width: 1.0 ),
     lissajous: ( color: "#ffff80", scale: 0.45 ),
+    // Feature cursors (4): the theme's ember accent — the warmest,
+    // highest-contrast hue against both the green waterfall and the blue
+    // waveform, and a nod to sndpeek's red feature overlay.
+    cursor: "#e2542a",
     meters: ( grad_low: "#59ff4d", grad_high: "#ff4d4d", peak_hold_ms: 800 ),
     hud: ( text: "#e6e9ef", dim: "#8a93a5", font_size: 14.0, accent: "#e2542a" ),
 )

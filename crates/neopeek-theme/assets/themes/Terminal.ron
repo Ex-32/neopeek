@@ -21,6 +21,9 @@
     ),
     waveform: ( color: "#2aff6a", width: 1.0 ),
     lissajous: ( color: "#00ff9c", scale: 0.45 ),
+    // Feature cursors (4): the HUD accent red — the theme's only non-green
+    // hue, the one color that stays visible inside an all-phosphor scene.
+    cursor: "#ff5d5d",
     meters: ( grad_low: "#0f9d58", grad_high: "#ff3b30", peak_hold_ms: 800 ),
     hud: ( text: "#7dff9e", dim: "#2e7d4f", font_size: 14.0, accent: "#ff5d5d" ),
 )
