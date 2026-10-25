@@ -90,7 +90,7 @@ rendering in those states; only genuine audio idleness pauses.
 
 ## Themes
 
-RON files (PLAN §6.1): background, waterfall colors (`past`/`future`/
+RON files: background, waterfall colors (`past`/`future`/
 `now_line`, optional `rainbow`, dB window, optional `surface_ramp` stops),
 waveform/lissajous color+scale, meter gradient + peak hold, HUD text colors
 and font size. Example — see `crates/neopeek-theme/assets/themes/Ember.ron`.
@@ -154,7 +154,7 @@ off by default).
 
 ## Architecture
 
-Workspace crates (PLAN §2.1):
+Workspace crates:
 
 - `neopeek-audio` — PulseAudio capture, PCM SPSC ring, device listing
 - `neopeek-dsp` — windowing + FFT engine, fixed-size POD `Frame` (bins,
