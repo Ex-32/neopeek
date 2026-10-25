@@ -1,15 +1,12 @@
 # neopeek
 
-A modern, clean-room reimplementation of [sndpeek](https://github.com/guscreek/sndpeek)'s
-3D FFT-waterfall visualizer: live audio → real-time 3D spectrum waterfall,
-waveform, Lissajous figure, metering and diagnostics, rendered with wgpu
-(Vulkan/GL fallback) — no X11/GLUT, no GPL code.
+**Disclaimer: this project was written by agents for fun and was only tested in a pipewire+vulkan+wayland environment—I have not read most of the code, so no guarantees about functionality or code quality**
 
-> sndpeek is GPL; neopeek is a **clean-room** project: behavior-matched from
-> recorded constants and observation (see `docs/research-sndpeek.md`), no
-> code ported. Licensed GPL-3.0-only (see `LICENSE`).
+A modern, reimplementation of [sndpeek](https://github.com/guscreek/sndpeek) with support for modern linux audio stacks.
 
 ![screenshot placeholder — add a screenshot of the running waterfall](docs/screenshot.png)
+
+This reimplementation was done as a "clean room" to avoid importing historical technical debt or design idiosyncrasies, but since the agents were not restricted from accessing the source code of the original project (GPL2 or later) I've decided to license it under GPL3 to be safe.
 
 ## Build & run
 
@@ -118,7 +115,7 @@ the rainbow heatmap.
 
 Colors are `#rgb`, `#rrggbb` or `#rrggbbaa`.
 
-Built-ins: **Ember** (default — hand-tuned for contrast), **Ice** (blue/cyan),
+Built-ins: **Ember** (default; pleasant mid-contrast dark theme), **Ice** (blue/cyan),
 **Terminal** (high-contrast phosphor-CRT hacker green), **Cyber** (bright-pink
 waterfall, electric-yellow Lissajous), **TTY** (pure-black background, classic
 VGA 16-color console palette).
@@ -179,5 +176,4 @@ strings — negligible, and it keeps borrows disjoint).
 
 GPL-3.0-only. The bundled JetBrains Mono font
 (`crates/neopeek-render/assets/fonts/`) is under the SIL Open Font License
-1.1 (`JetBrainsMono-OFL.txt` alongside it). All sndpeek knowledge here is
-clean-room observed behavior, not ported code.
+1.1 (`JetBrainsMono-OFL.txt` alongside it).
