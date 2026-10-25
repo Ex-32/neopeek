@@ -21,10 +21,6 @@
     ),
     waveform: ( color: "#4da6ff", width: 1.0 ),
     lissajous: ( color: "#8adfff", scale: 0.45 ),
-    // Feature cursors (4): the meters' teal — inside the cool family but
-    // greener than every waterfall/waveform hue, so the lines read as
-    // markers rather than more spectrum.
-    cursor: "#2ec4b6",
     meters: ( grad_low: "#2ec4b6", grad_high: "#b04dff", peak_hold_ms: 800 ),
     hud: ( text: "#c8d8ee", dim: "#5a6f8a", font_size: 14.0, accent: "#9ef0ff" ),
 )

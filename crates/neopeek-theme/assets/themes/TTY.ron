@@ -23,10 +23,6 @@
     ),
     waveform: ( color: "#55FFFF", width: 1.0 ),       // VGA bright cyan
     lissajous: ( color: "#FF55FF", scale: 0.45 ),     // VGA bright magenta
-    // Feature cursors (4): VGA bright white — legible on the pure-black
-    // background and the one VGA hue no view already claims (the now-edge
-    // yellow and the meters' green/red stay unambiguous).
-    cursor: "#FFFFFF",
     meters: ( grad_low: "#00AA00", grad_high: "#FF5555", peak_hold_ms: 800 ),
     hud: ( text: "#FFFFFF", dim: "#AAAAAA", font_size: 14.0, accent: "#55FFFF" ),
 )

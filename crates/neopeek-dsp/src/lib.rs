@@ -5,8 +5,7 @@
 //! - per-frame stereo→mono average (L and R kept for meters/Lissajous upstream)
 //! - Hanning window over the 1024-sample analysis window
 //! - zero-padded 2048-point forward real FFT (rustfft) → 1024 magnitude bins
-//! - feature extraction: spectral centroid, flux, rolloff at
-//!   25%/50%/75%/80%
+//! - feature extraction: spectral centroid, flux, rolloff at 50%/80%
 //!   (4-frame moving average smoothing, sndpeek `LP = 4` parity)
 //!
 //! All math is reimplemented fresh from definitions — nothing is ported
@@ -95,12 +94,6 @@ pub struct Frame {
     pub centroid: f32,
     /// RMS-normalized spectral flux (see [`flux`]).
     pub flux: f32,
-    /// Lowest bin where cumulative magnitude crosses 25% / 75% of total —
-    /// the *quartile* bars of the cursor overlay (sndpeek's overlay drew
-    /// 50%/80% markers; here the centroid line is flanked by the 25%/75%
-    /// points instead).
-    pub rolloff25: f32,
-    pub rolloff75: f32,
     /// Lowest bin where cumulative magnitude crosses 50% / 80% of total.
     pub rolloff50: f32,
     pub rolloff80: f32,
@@ -123,8 +116,6 @@ impl Default for Frame {
             peak: [0.0; CHANNELS],
             centroid: 0.0,
             flux: 0.0,
-            rolloff25: 0.0,
-            rolloff75: 0.0,
             rolloff50: 0.0,
             rolloff80: 0.0,
         }
@@ -267,8 +258,6 @@ pub struct Engine {
     seq: u64,
     smooth_centroid: MovingAverage,
     smooth_flux: MovingAverage,
-    smooth_rolloff25: MovingAverage,
-    smooth_rolloff75: MovingAverage,
     smooth_rolloff50: MovingAverage,
     smooth_rolloff80: MovingAverage,
 }
@@ -295,8 +284,6 @@ impl Engine {
             seq: 0,
             smooth_centroid: MovingAverage::default(),
             smooth_flux: MovingAverage::default(),
-            smooth_rolloff25: MovingAverage::default(),
-            smooth_rolloff75: MovingAverage::default(),
             smooth_rolloff50: MovingAverage::default(),
             smooth_rolloff80: MovingAverage::default(),
         }
@@ -340,8 +327,6 @@ impl Engine {
         self.prev_bins.fill(0.0);
         self.smooth_centroid.reset();
         self.smooth_flux.reset();
-        self.smooth_rolloff25.reset();
-        self.smooth_rolloff75.reset();
         self.smooth_rolloff50.reset();
         self.smooth_rolloff80.reset();
     }
@@ -436,8 +421,6 @@ impl Engine {
         let c = centroid(valid);
         let r50 = rolloff(valid, 0.5);
         let r80 = rolloff(valid, 0.8);
-        let r25 = rolloff(valid, 0.25);
-        let r75 = rolloff(valid, 0.75);
         self.prev_bins = mags;
 
         self.seq += 1;
@@ -453,8 +436,6 @@ impl Engine {
             peak,
             centroid: self.smooth_centroid.push(c),
             flux: self.smooth_flux.push(raw_flux),
-            rolloff25: self.smooth_rolloff25.push(r25),
-            rolloff75: self.smooth_rolloff75.push(r75),
             rolloff50: self.smooth_rolloff50.push(r50),
             rolloff80: self.smooth_rolloff80.push(r80),
         })
@@ -545,52 +526,6 @@ mod tests {
         assert_eq!(rolloff(&mags, 0.8), 7.0);
         assert_eq!(rolloff(&mags, 1.0), 9.0);
         assert_eq!(rolloff(&[0.0; 4], 0.5), 0.0);
-        // Two-tone spectrum (bin 10 weight 1.0, bin 90 weight 3.0,
-        // total 4): the cumulative magnitude sits flat between the tones,
-        // so 25% (= 1.0) is crossed at bin 10 and 75% (= 3.0) at bin 90 —
-        // the quartile crossings bracket the centroid (weighted mean = 70).
-        let mut two_tone = vec![0.0f32; 128];
-        two_tone[10] = 1.0;
-        two_tone[90] = 3.0;
-        let total = two_tone.iter().sum::<f32>();
-        assert_eq!(rolloff(&two_tone, 0.25), 10.0);
-        assert_eq!(rolloff(&two_tone, 0.75), 90.0);
-        assert!((total - 4.0).abs() < 1e-6);
-    }
-
-    /// The engine's quartile rolloffs follow a known synthetic spectrum
-    /// through the same 4-frame smoothing as centroid (constant input ⇒
-    /// the smoothed value equals the raw metric; non-constant input ⇒
-    /// they move together, tap for tap).
-    #[test]
-    fn quartile_rolloffs_follow_two_tone_and_smooth_like_centroid() {
-        let mut engine = Engine::new(DEFAULT_FFT_SIZE);
-        let mut frame = None;
-        for _ in 0..4 {
-            frame = engine.process_window(&sine_interleaved(
-                90.0 * RATE as f32 / DEFAULT_FFT_SIZE as f32,
-                WINDOW_FRAMES,
-            ));
-        }
-        let frame = frame.unwrap();
-        // One pure tone: every cumulative crossing lands at the same
-        // peak bin — quartiles and centroid agree for a line spectrum.
-        let peak = argmax(&frame.bins[..frame.bin_count as usize]) as f32;
-        assert!(
-            (frame.rolloff25 - peak).abs() <= 1.0
-                && (frame.rolloff75 - peak).abs() <= 1.0,
-            "quartiles {} / {} vs peak {}",
-            frame.rolloff25,
-            frame.rolloff75,
-            peak
-        );
-        // Smoothing parity: on constant frames the smoothed engine value
-        // equals what a raw MovingAverage over the same metric produces
-        // — exactly how the smoothed centroid arrives too.
-        let raw_valid = &frame.bins[..frame.bin_count as usize];
-        assert_eq!(frame.rolloff25, rolloff(raw_valid, 0.25));
-        assert_eq!(frame.rolloff75, rolloff(raw_valid, 0.75));
-        assert_eq!(frame.centroid, centroid(raw_valid));
     }
 
     #[test]
@@ -645,8 +580,6 @@ mod tests {
         assert!(frame.peak.iter().all(|m| m.is_finite()));
         assert!(frame.centroid.is_finite());
         assert!(frame.flux.is_finite());
-        assert!(frame.rolloff25.is_finite());
-        assert!(frame.rolloff75.is_finite());
         assert!(frame.rolloff50.is_finite());
         assert!(frame.rolloff80.is_finite());
     }
@@ -748,21 +681,21 @@ mod tests {
         fn assert_copy<T: Copy>() {}
         assert_copy::<Frame>();
         // MAX_BINS-magnitude array + mono/left/right (3×1024) + u64 seq +
-        // u32 bin_count + 2×2 channel f32 (rms, peak) + 6 scalar f32
-        // (centroid, flux, rolloff25/50/75/80) + 1 bool (mono_like).
+        // u32 bin_count + 2×2 channel f32 (rms, peak) + 4 scalar f32
+        // (centroid, flux, rolloff50/80) + 1 bool (mono_like).
         let expected = std::mem::size_of::<u64>()
             + MAX_BINS * std::mem::size_of::<f32>()
             + 3 * WINDOW_FRAMES * std::mem::size_of::<f32>()
             + std::mem::size_of::<u32>()
             + std::mem::size_of::<u8>() // mono_like
             + 4 * std::mem::size_of::<f32>()
-            + 6 * std::mem::size_of::<f32>();
+            + 4 * std::mem::size_of::<f32>();
         let aligned = expected.div_ceil(8) * 8; // u64 alignment of field 1
         assert_eq!(std::mem::size_of::<Frame>(), aligned.max(8));
         // Ring budget: 256 frames ≈ 7 MB with the MAX_BINS-sized array.
         assert_eq!(
             std::mem::size_of::<Frame>(),
-            28_728,
+            28_720,
             "unexpected Frame growth"
         );
     }
@@ -871,7 +804,6 @@ mod tests {
         assert_eq!(argmax(&frame.bins[..4096]), 40);
         assert!(frame.centroid.is_finite());
         assert!(frame.rolloff50.is_finite() && frame.rolloff80.is_finite());
-        assert!(frame.rolloff25.is_finite() && frame.rolloff75.is_finite());
         // Back down the ladder: geometry follows again.
         engine.set_fft_size(512);
         let frame = engine

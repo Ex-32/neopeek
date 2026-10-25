@@ -13,24 +13,6 @@ use crate::grid::{DEFAULT_DEPTH, MAX_DEPTH, MIN_DEPTH};
 /// Default vantage constants come from `crate::camera`; view constants here.
 pub const WAVE_Y: f32 = 0.7;
 
-/// Top of the centroid cursor's vertical extent (world y). Just above the
-/// default-gain typical waterfall peak (≈ 1.73 at gain 0.35); `=` zoom and
-/// auto-scale can push content past it — the cursor marks the axis, it is
-/// not a ceiling for the spectrum.
-pub const CURSOR_TOP_Y: f32 = 2.0;
-
-/// Height of the 25%/75% quartile bars as a fraction of the centroid
-/// line's extent (they span `0…CURSOR_TOP_Y·QUARTILE_HEIGHT → 0…1.0`).
-/// Half the full-height line reads clearly subordinate — the quartiles
-/// mark where the spectral mass brackets the centroid, not the centroid
-/// itself — and stays proportional wherever `CURSOR_TOP_Y` changes.
-pub const QUARTILE_HEIGHT: f32 = 0.5;
-
-/// Brightness multiplier applied to the theme `cursor` color for the
-/// quartile bars so they read visually quieter than the full-height
-/// centroid line without introducing a second theme field.
-pub const QUARTILE_BRIGHTNESS: f32 = 0.65;
-
 /// Default waterfall uniform `gain` (sndpeek used 1.0). At 1.0 the linear
 /// mapping flings a typical monitor frame (max |X| ≈ 0.3 →
 /// y = 1.0·1.8·sqrt(25·0.3) ≈ 4.9) several times past the top of the view.
@@ -72,15 +54,6 @@ pub struct ViewSettings {
     pub waveform_on: bool,
     pub lissajous_on: bool,
     pub waterfall_on: bool,
-    /// `4`: feature-cursor overlay (sndpeek feature-overlay parity) —
-    /// the vertical spectral-centroid line on the waterfall, flanked by
-    /// two smaller vertical bars at the 25%/75% spectral points
-    /// (quartile rolloffs). Default **on**: sndpeek drew the overlay on
-    /// every frame unless `4` disabled it (research doc: the overlay is
-    /// one of the four things drawn on every frame, and sndpeek's own
-    /// overlay carried a centroid line + rolloff markers). Color comes
-    /// from the theme (`cursor` field).
-    pub cursors_on: bool,
     /// `d`: dB magnitude mode instead of linear.
     pub db: bool,
     /// `S`: filled-surface waterfall mode (theme `surface_ramp` colors).
@@ -144,7 +117,6 @@ impl Default for ViewSettings {
             waveform_on: true,
             lissajous_on: true,
             waterfall_on: true,
-            cursors_on: true,
             db: false,
             surface: false,
             rainbow: false,
@@ -292,10 +264,6 @@ impl ViewSettings {
     pub fn toggle_waterfall(&mut self) {
         self.waterfall_on = !self.waterfall_on;
     }
-    /// `4`: feature-cursor overlay toggle.
-    pub fn toggle_cursors(&mut self) {
-        self.cursors_on = !self.cursors_on;
-    }
     pub fn toggle_db(&mut self) {
         self.db = !self.db;
     }
@@ -397,97 +365,6 @@ pub fn append_lissajous(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVerte
     }
 }
 
-/// One straight strip segment `a` → `b` (2 points → 4 verts), expanded
-/// perpendicular to the tangent by [`ViewSettings::strip_width`] exactly
-/// like the curved strips.
-fn append_segment(a: [f32; 3], b: [f32; 3], s: &ViewSettings, out: &mut Vec<LineVertex>) {
-    let hw = s.strip_width * 0.5;
-    let (tx, ty) = (b[0] - a[0], b[1] - a[1]);
-    let len = (tx * tx + ty * ty).sqrt().max(1e-9);
-    let (nx, ny) = (-ty / len, tx / len);
-    out.push(LineVertex { pos: [a[0] + nx * hw, a[1] + ny * hw, a[2]] });
-    out.push(LineVertex { pos: [a[0] - nx * hw, a[1] - ny * hw, a[2]] });
-    out.push(LineVertex { pos: [b[0] + nx * hw, b[1] + ny * hw, b[2]] });
-    out.push(LineVertex { pos: [b[0] - nx * hw, b[1] - ny * hw, b[2]] });
-}
-
-/// Append the spectral-centroid cursor (sndpeek's feature overlay, key
-/// `4`): a vertical line at the centroid bin's x, mapped through the same
-/// log-spaced axis as the waterfall grid
-/// ([`crate::grid::normalized_position_at`] — one bin position, no
-/// per-frame axis allocation), so the line always stands over the bin it
-/// marks whatever the runtime FFT size (`o`/`n`) or log factor (`c`/`v`).
-///
-/// Extent/placement: y spans `0…[`CURSOR_TOP_Y`]` (the spectrum's floor
-/// up to just past the default-gain typical peak), matching sndpeek's
-/// full-height red line. It stands on the newest *history* slice plane —
-/// one [`ViewSettings::spacing`] step behind the arriving plane, but
-/// never in front of `z = −spacing` even when `j`/`k` push the grid
-/// toward the camera — because the Lissajous figure is coplanar with the
-/// arriving plane (`z = z_offset`, x ≈ 0.25…1.15): the offset keeps the
-/// cursor out of the figure's plane entirely, and it rides the
-/// waterfall's `z_offset`/`spacing` keys with the rest of the grid.
-///
-/// The centroid arrives in bins ([`Frame::centroid`], 4-frame smoothed);
-/// fractional values round to the nearest bin, out-of-range values clamp
-/// into the axis. Skipped when the frame carries no spectrum
-/// (`bin_count < 2` — the axis mapping divides by `bins − 1`).
-pub fn append_centroid_cursor(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVertex>) {
-    if !s.cursors_on {
-        return;
-    }
-    let bins = frame.bin_count as usize;
-    if bins < 2 {
-        return;
-    }
-    let bin = (frame.centroid.round() as i64).clamp(0, bins as i64 - 1) as usize;
-    let x = crate::grid::x_from_normalized(crate::grid::normalized_position_at(
-        s.log_factor, bins, bin,
-    ));
-    // z_offset rides along, but never past the Lissajous plane (z = 0).
-    let z = (s.z_offset - s.spacing).min(-s.spacing);
-    append_segment([x, 0.0, z], [x, CURSOR_TOP_Y, z], s, out);
-}
-
-/// Append the 25%/75% *quartile* cursors (sndpeek's feature overlay, key
-/// `4`): two vertical bars, smaller than the centroid line, standing at
-/// the 25% and 75% spectral points — the cumulative-magnitude crossings
-/// ([`Frame::rolloff25`]/[`Frame::rolloff75`], 4-frame smoothed, same
-/// smoothing path as the centroid) mapped through the same log-spaced
-/// axis as the waterfall grid (`normalized_position_at` — one bin
-/// position per bar, no per-frame axis allocation), so the bars always
-/// stand over the bins they mark whatever the runtime FFT size
-/// (`o`/`n`) or log factor (`c`/`v`).
-///
-/// Extent/placement: y spans `0…CURSOR_TOP_Y·QUARTILE_HEIGHT` (half the
-/// centroid line's height, see [`QUARTILE_HEIGHT`]), standing on the
-/// same newest *history* slice plane as the centroid cursor — one
-/// spacing behind the arriving plane, never in front of `z = −spacing`,
-/// so the bars never enter the Lissajous figure's plane.
-///
-/// The rolloffs arrive in bins; fractional values round to the nearest
-/// bin, out-of-range values clamp into the axis. Skipped when the frame
-/// carries no spectrum (`bin_count < 2` — the axis mapping divides by
-/// `bins − 1`).
-pub fn append_quartile_cursors(frame: &Frame, s: &ViewSettings, out: &mut Vec<LineVertex>) {
-    if !s.cursors_on {
-        return;
-    }
-    let bins = frame.bin_count as usize;
-    if bins < 2 {
-        return;
-    }
-    let top = CURSOR_TOP_Y * QUARTILE_HEIGHT;
-    for rolloff in [frame.rolloff25, frame.rolloff75] {
-        let bin = (rolloff.round() as i64).clamp(0, bins as i64 - 1) as usize;
-        let x = crate::grid::x_from_normalized(crate::grid::normalized_position_at(
-            s.log_factor, bins, bin,
-        ));
-        let z = (s.z_offset - s.spacing).min(-s.spacing);
-        append_segment([x, 0.0, z], [x, top, z], s, out);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,7 +415,6 @@ mod tests {
         assert!((s.liss_scale - 0.45).abs() < 1e-9);
         assert!((s.z_offset - 0.0).abs() < 1e-9);
         assert!(s.waveform_on && s.lissajous_on && s.waterfall_on);
-        assert!(s.cursors_on, "sndpeek drew the feature overlay by default");
         assert!(!s.db && !s.rainbow && !s.frozen);
     }
 
@@ -868,162 +744,6 @@ mod tests {
         approx(s.z_offset, -19.9);
     }
 
-    /// Centroid cursor: x maps through the grid's log-spaced axis for the
-    /// frame's bin count; y spans 0…CURSOR_TOP_Y; it stands one spacing
-    /// behind the arriving plane and never enters the Lissajous plane.
-    #[test]
-    fn centroid_cursor_sits_at_the_mapped_bin_x() {
-        let mut f = Frame { bin_count: 1024, ..Frame::default() }; // the default 2048-point FFT
-        f.centroid = 0.0;
-        let s = ViewSettings::default();
-        let mut out = Vec::new();
-        append_centroid_cursor(&f, &s, &mut out);
-        assert_eq!(out.len(), 4, "one straight segment = 2 points = 4 verts");
-        // Bin 0 → the axis' left edge; vertical extent 0…CURSOR_TOP_Y.
-        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, -1.8);
-        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, 0.0);
-        approx((out[2].pos[1] + out[3].pos[1]) / 2.0, CURSOR_TOP_Y);
-        // One spacing behind the arriving plane (z = 0 at the default
-        // z_offset) — off the Lissajous plane entirely.
-        approx(out[0].pos[2], -0.12);
-
-        // A mid-spectrum centroid maps exactly like the grid axis.
-        f.centroid = 331.0;
-        out.clear();
-        append_centroid_cursor(&f, &s, &mut out);
-        let want = crate::grid::x_from_normalized(
-            crate::grid::normalized_positions(s.log_factor, 1024)[331],
-        );
-        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, want);
-
-        // Fractional (4-frame smoothed) centroids round to the nearest bin.
-        f.centroid = 331.49;
-        out.clear();
-        append_centroid_cursor(&f, &s, &mut out);
-        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, want);
-
-        // Runtime FFT size: the mapping follows the frame's bin count
-        // (here 512 bins = the 1024-point FFT rung).
-        f.centroid = 255.0;
-        f.bin_count = 512;
-        out.clear();
-        append_centroid_cursor(&f, &s, &mut out);
-        let want = crate::grid::x_from_normalized(
-            crate::grid::normalized_positions(s.log_factor, 512)[255],
-        );
-        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, want);
-
-        // Out-of-range centroids clamp into the axis instead of wild x.
-        f.centroid = 9_999.0;
-        out.clear();
-        append_centroid_cursor(&f, &s, &mut out);
-        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, 1.8);
-
-        // z_offset rides along, but never past the Lissajous plane (z = 0
-        // at any spacing/z_offset combination the keys can produce).
-        let mut fwd = ViewSettings::default();
-        fwd.move_z_offset(false); // +0.1 toward the camera
-        out.clear();
-        append_centroid_cursor(&f, &fwd, &mut out);
-        approx(out[0].pos[2], -0.12);
-        let mut back = ViewSettings::default();
-        back.move_z_offset(true); // −0.1
-        out.clear();
-        append_centroid_cursor(&f, &back, &mut out);
-        approx(out[0].pos[2], -0.22);
-
-        // No spectrum this frame (bin_count < 2) → no cursor at all.
-        let silent = Frame::default();
-        out.clear();
-        append_centroid_cursor(&silent, &s, &mut out);
-        assert!(out.is_empty());
-    }
-
-    /// Quartile cursors: x maps through the grid's log-spaced axis for
-    /// the frame's bin count at rolloff 0.25 / 0.75; y spans half the
-    /// centroid extent (0…1.0); they stand on the same history plane as
-    /// the centroid cursor and never enter the Lissajous plane.
-    #[test]
-    fn quartile_cursors_sit_at_the_mapped_rolloff_bins() {
-        let mut f = Frame { bin_count: 1024, ..Frame::default() };
-        // Two-tone style spacing — quartiles well apart so the two bars
-        // cannot collide in the test.
-        f.rolloff25 = 100.0;
-        f.rolloff75 = 700.0;
-        let s = ViewSettings::default();
-        let mut out = Vec::new();
-        append_quartile_cursors(&f, &s, &mut out);
-        assert_eq!(out.len(), 8, "two straight segments = 8 verts");
-        let axis = crate::grid::normalized_positions(s.log_factor, 1024);
-        let x25 = crate::grid::x_from_normalized(axis[100]);
-        let x75 = crate::grid::x_from_normalized(axis[700]);
-        // Segment order: 25% first, 75% second; each spans 0…1.0.
-        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, x25);
-        approx((out[2].pos[0] + out[3].pos[0]) / 2.0, x25);
-        approx((out[4].pos[0] + out[5].pos[0]) / 2.0, x75);
-        approx((out[6].pos[0] + out[7].pos[0]) / 2.0, x75);
-        approx((out[0].pos[1] + out[1].pos[1]) / 2.0, 0.0);
-        approx((out[2].pos[1] + out[3].pos[1]) / 2.0, CURSOR_TOP_Y * QUARTILE_HEIGHT);
-        // Same z placement logic as the centroid cursor.
-        approx(out[0].pos[2], -0.12);
-        // Fractional (4-frame smoothed) rolloffs round to the nearest bin.
-        f.rolloff25 = 100.49;
-        out.clear();
-        append_quartile_cursors(&f, &s, &mut out);
-        approx((out[0].pos[0] + out[1].pos[0]) / 2.0, x25);
-        // Runtime FFT size: the mapping follows the frame's bin count
-        // (here 512 bins = the 1024-point FFT rung).
-        f.bin_count = 512;
-        f.rolloff25 = 50.0;
-        f.rolloff75 = 350.0;
-        out.clear();
-        append_quartile_cursors(&f, &s, &mut out);
-        let axis512 = crate::grid::normalized_positions(s.log_factor, 512);
-        approx(
-            (out[0].pos[0] + out[1].pos[0]) / 2.0,
-            crate::grid::x_from_normalized(axis512[50]),
-        );
-        approx(
-            (out[4].pos[0] + out[5].pos[0]) / 2.0,
-            crate::grid::x_from_normalized(axis512[350]),
-        );
-        // z_offset rides along, but never past the Lissajous plane.
-        let mut fwd = ViewSettings::default();
-        fwd.move_z_offset(false); // +0.1 toward the camera
-        out.clear();
-        append_quartile_cursors(&f, &fwd, &mut out);
-        approx(out[0].pos[2], -0.12);
-        // No spectrum this frame (bin_count < 2) → no cursor at all.
-        let silent = Frame::default();
-        out.clear();
-        append_quartile_cursors(&silent, &s, &mut out);
-        assert!(out.is_empty());
-    }
-
-    /// Disabled (`4` off) → no cursor vertices at all (centroid or
-    /// quartile).
-    #[test]
-    fn cursors_disabled_produce_no_vertices() {
-        let f = Frame {
-            bin_count: 1024,
-            centroid: 100.0,
-            rolloff25: 50.0,
-            rolloff75: 150.0,
-            ..Frame::default()
-        };
-        let mut s = ViewSettings::default();
-        let mut out = Vec::new();
-        append_centroid_cursor(&f, &s, &mut out);
-        append_quartile_cursors(&f, &s, &mut out);
-        assert_eq!(out.len(), 12, "three straight segments");
-        s.toggle_cursors();
-        assert!(!s.cursors_on);
-        out.clear();
-        append_centroid_cursor(&f, &s, &mut out);
-        append_quartile_cursors(&f, &s, &mut out);
-        assert!(out.is_empty(), "disabled → no vertices");
-    }
-
     #[test]
     fn toggles_flip() {
         let mut s = ViewSettings::default();
@@ -1039,11 +759,6 @@ mod tests {
         assert!(!s.waterfall_on);
         s.toggle_lissajous();
         assert!(!s.lissajous_on);
-        // `4`: feature cursors default on, flip off and back.
-        s.toggle_cursors();
-        assert!(!s.cursors_on);
-        s.toggle_cursors();
-        assert!(s.cursors_on);
         // `a`: content-adaptive gain — default off, toggles back.
         assert!(!s.auto_scale);
         s.toggle_auto_scale();

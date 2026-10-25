@@ -66,7 +66,6 @@ pub struct Renderer {
     waterfall: Waterfall,
     waveform: LinePipeline,
     lissajous: LinePipeline,
-    cursor: LinePipeline,
     history: History,
     // HUD (M6): glyphon text + meter quads.
     hud_quads: HudQuads,
@@ -85,8 +84,6 @@ pub struct Renderer {
     scratch_frames: Vec<Frame>,
     scratch_wave: Vec<LineVertex>,
     scratch_liss: Vec<LineVertex>,
-    scratch_centroid: Vec<LineVertex>,
-    scratch_quartile: Vec<LineVertex>,
     last_frame_arrival: Option<Instant>,
     rate: u32,
 }
@@ -180,9 +177,6 @@ impl Renderer {
         let strip_verts = (2 * WINDOW_FRAMES) as u64; // quad strips: 2 verts/point
         let waveform = LinePipeline::new(&device, format, wgpu::TextureFormat::Depth24Plus, "waveform", strip_verts);
         let lissajous = LinePipeline::new(&device, format, wgpu::TextureFormat::Depth24Plus, "lissajous", strip_verts);
-        // Feature cursors (sndpeek overlay '4'): three straight segments
-        // (centroid line + two 25%/75% quartile bars), 4 verts each.
-        let cursor = LinePipeline::new(&device, format, wgpu::TextureFormat::Depth24Plus, "cursor", 12);
         let adapter_info = adapter.get_info();
         let adapter_name = format!("{} ({:?})", adapter_info.name, adapter_info.backend);
         let hud_quads = HudQuads::new(&device, format);
@@ -208,7 +202,6 @@ impl Renderer {
             waterfall,
             waveform,
             lissajous,
-            cursor,
             history,
             hud_quads,
             hud_ui,
@@ -220,8 +213,6 @@ impl Renderer {
             scratch_frames: Vec::with_capacity(FRAME_RING_FRAMES),
             scratch_wave: Vec::with_capacity(2 * WINDOW_FRAMES),
             scratch_liss: Vec::with_capacity(2 * WINDOW_FRAMES),
-            scratch_centroid: Vec::with_capacity(4),
-            scratch_quartile: Vec::with_capacity(8),
             last_frame_arrival: None,
             rate: DEFAULT_RATE,
         })
@@ -380,15 +371,6 @@ impl Renderer {
             crate::views::append_waveform(latest, settings, &mut self.scratch_wave);
             crate::views::append_lissajous(latest, settings, &mut self.scratch_liss);
         }
-        // Feature cursors (sndpeek overlay '4'), theme-colored.
-        self.scratch_centroid.clear();
-        self.scratch_quartile.clear();
-        if settings.cursors_on {
-            if let Some(latest) = &self.latest {
-                crate::views::append_centroid_cursor(latest, settings, &mut self.scratch_centroid);
-                crate::views::append_quartile_cursors(latest, settings, &mut self.scratch_quartile);
-            }
-        }
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -449,18 +431,6 @@ impl Renderer {
             if settings.lissajous_on && self.latest.is_some() {
                 self.lissajous.set(&self.queue, &vp, Theme::rgb(&theme.lissajous.color));
                 self.lissajous.draw_strip(&mut pass, &self.queue, &self.scratch_liss);
-            }
-            if settings.cursors_on && self.latest.is_some() {
-                // The centroid line rides the full theme cursor color;
-                // the quartile bars are picture-coded quieter — the same
-                // color dimmed (see views::QUARTILE_BRIGHTNESS), no
-                // second theme field.
-                let [r, g, b] = Theme::rgb(&theme.cursor_color());
-                let dim = crate::views::QUARTILE_BRIGHTNESS;
-                self.cursor.set(&self.queue, &vp, [r * dim, g * dim, b * dim]);
-                self.cursor.draw_strip(&mut pass, &self.queue, &self.scratch_quartile);
-                self.cursor.set(&self.queue, &vp, [r, g, b]);
-                self.cursor.draw_strip(&mut pass, &self.queue, &self.scratch_centroid);
             }
         }
 

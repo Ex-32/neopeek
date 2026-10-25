@@ -530,7 +530,7 @@ fn device_text(hud: &HudData) -> String {
 /// binds.
 fn hints_text() -> &'static str {
     concat!(
-        "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · F reset · X Y Z snap · 1 wave · 2 liss · 3 waterfall · 4 cursors · S surface\n",
+        "drag orbit · shift-drag pan · wheel zoom · [ ] tilt · F reset · X Y Z snap · 1 wave · 2 liss · 3 waterfall · S surface\n",
         "d dB · r rainbow · u i spacing · j k z-offset · PageUp PgDn depth · c v log-axis · - = spectrum · _ + wave · l L liss · < > width\n",
         "y liss-delay · o n fft-size · f freeze · m mute · h hints · H hud · T theme · p print · q quit",
     )

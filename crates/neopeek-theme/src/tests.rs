@@ -66,51 +66,6 @@ fn surface_ramp_optional_and_typed() {
     assert_eq!(t.waterfall.surface_ramp[0].pos, 0.0);
 }
 
-/// `cursor` is optional: a custom theme without it parses and gets the
-/// sndpeek-red fallback; an explicit value flows through.
-#[test]
-fn cursor_optional_with_fallback() {
-    let minimal = Theme::parse(
-        r##"(name: "x", background: "#0b0b10", waterfall: (past: "#fff", future: "#fff", now_line: "#fff", db_floor: -80.0, db_ceil: 0.0), waveform: (color: "#fff", width: 1.0), lissajous: (color: "#fff", scale: 1.0), meters: (grad_low: "#fff", grad_high: "#fff", peak_hold_ms: 1), hud: (text: "#fff", dim: "#fff", font_size: 14.0, accent: "#fff"))"##,
-    )
-    .unwrap();
-    assert!(minimal.cursor.is_none());
-    assert_eq!(minimal.cursor_color(), Theme::DEFAULT_CURSOR_COLOR);
-
-    let explicit = Theme::parse(
-        r##"(name: "x", background: "#0b0b10", waterfall: (past: "#fff", future: "#fff", now_line: "#fff", db_floor: -80.0, db_ceil: 0.0), waveform: (color: "#fff", width: 1.0), lissajous: (color: "#fff", scale: 1.0), meters: (grad_low: "#fff", grad_high: "#fff", peak_hold_ms: 1), hud: (text: "#fff", dim: "#fff", font_size: 14.0, accent: "#fff"), cursor: "#00ff00")"##,
-    )
-    .unwrap();
-    assert_eq!(explicit.cursor_color(), [0.0, 1.0, 0.0, 1.0]);
-
-    // A malformed cursor value is a hard parse error, like other colors.
-    assert!(Theme::parse(
-        r##"(name: "x", background: "#0b0b10", waterfall: (past: "#fff", future: "#fff", now_line: "#fff", db_floor: -80.0, db_ceil: 0.0), waveform: (color: "#fff", width: 1.0), lissajous: (color: "#fff", scale: 1.0), meters: (grad_low: "#fff", grad_high: "#fff", peak_hold_ms: 1), hud: (text: "#fff", dim: "#fff", font_size: 14.0, accent: "#fff"), cursor: "nope")"##,
-    )
-    .is_err());
-}
-
-/// Every built-in pins its feature-cursor color — the per-theme choices
-/// documented in the .ron comments (Cyber reuses its yellow family).
-#[test]
-fn builtin_cursor_colors_pinned() {
-    let expect: &[(&str, &str)] = &[
-        ("Ember", "#e2542a"),     // ember accent (sndpeek-red nod)
-        ("Ice", "#2ec4b6"),       // meters teal
-        ("Terminal", "#ff5d5d"),  // HUD accent red
-        ("Cyber", "#fff01a"),     // electric-yellow family reuse
-        ("TTY", "#FFFFFF"),       // VGA bright white
-    ];
-    for (name, hex) in expect {
-        let t = builtin(name).expect("built-in must parse");
-        let want = parse_hex(hex).unwrap();
-        assert!(
-            t.cursor.unwrap().iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6),
-            "{name}: cursor {:?} ≠ {hex}", t.cursor.unwrap()
-        );
-    }
-}
-
 /// Rec.709 luminance of a resolved color (the stored values are the raw
 /// sRGB bytes scaled 1/255, so this is gamma-space luminance).
 fn lum(c: Color) -> f32 {
